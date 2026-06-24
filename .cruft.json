@@ -1,0 +1,33 @@
+{
+  "template": "https://github.com/cthoyt/cookiecutter-snekpack",
+  "commit": "dadda8d5d4d28f4aec7e0832e2568a34deb6023f",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "package_name": "mapkgsutils",
+      "package_name_stylized": "MaPkgsUtilS",
+      "short_description": "Utils shared by several mapping set generation tools for biomedical databases",
+      "author_name": "Javier Millan Acosta",
+      "author_github": "jmillanacosta",
+      "author_email": "javier.millanacosta@gmail.com",
+      "github_organization_name": "",
+      "github_repository_name": "mapkgsutils",
+      "command_line_interface": true,
+      "gitlab": false,
+      "runner": "just",
+      "citation_file": true,
+      "__not_charlie": "true",
+      "__runner": "just",
+      "__runner_uv": "--from rust-just just",
+      "__runner_pip": "rust-just",
+      "__runner_install_uv": "uv tool install rust-just",
+      "__runner_install_pip": "python3 -m pip install rust-just",
+      "__runner_tests": "test",
+      "__gh_slug": "/mapkgsutils",
+      "__package_name_dashed": "mapkgsutils",
+      "_template": "https://github.com/cthoyt/cookiecutter-snekpack",
+      "_commit": "dadda8d5d4d28f4aec7e0832e2568a34deb6023f"
+    }
+  },
+  "directory": null
+}
