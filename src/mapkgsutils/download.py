@@ -1,18 +1,9 @@
-"""Generic file-download primitives and datasource-agnostic release/version dispatch.
-
-The dispatchers here (:func:`get_latest_release_info`, :func:`list_versions`,
-:func:`get_download_urls`, :func:`resolve_release_date`,
-:func:`download_datasource`, :func:`download_datasource_with_release`,
-:func:`check_release`) know nothing about any specific datasource: each takes
-a small registry (a ``dict[str, Callable]`` or ``dict[str, type]``) supplied
-by the caller, mapping datasource names to that package's own per-source
-implementations.
-"""
+"""Generic file-download primitives and release/version dispatch."""
 
 from __future__ import annotations
 
 import gzip
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -333,7 +324,7 @@ def resolve_datasource_urls(
     config: _HasDownloadUrls,
     version: str | None = None,
     *,
-    urls_and_date: dict[str, UrlsAndDate],
+    urls_and_date: Mapping[str, UrlsAndDate],
     **kwargs: Any,
 ) -> tuple[dict[str, str], datetime | None]:
     """Resolve download URLs and the source release date for a datasource.
@@ -378,8 +369,8 @@ def get_download_urls(
     datasource: str,
     version: str | None = None,
     *,
-    all_datasources: dict[str, _HasDownloadUrls],
-    urls_and_date: dict[str, UrlsAndDate],
+    all_datasources: Mapping[str, _HasDownloadUrls],
+    urls_and_date: Mapping[str, UrlsAndDate],
     **kwargs: Any,
 ) -> dict[str, str]:
     """Get download URLs for a datasource.
@@ -409,8 +400,8 @@ def resolve_release_date(
     datasource: str,
     version: str | None = None,
     *,
-    all_datasources: dict[str, _HasDownloadUrls],
-    urls_and_date: dict[str, UrlsAndDate],
+    all_datasources: Mapping[str, _HasDownloadUrls],
+    urls_and_date: Mapping[str, UrlsAndDate],
     **kwargs: Any,
 ) -> datetime | None:
     """Resolve the upstream release date for a datasource/version.
@@ -443,7 +434,7 @@ def resolve_release_date(
 
 
 def get_latest_release_info(
-    datasource: str, *, checkers: dict[str, Callable[[], ReleaseInfo]]
+    datasource: str, *, checkers: Mapping[str, Callable[[], ReleaseInfo]]
 ) -> ReleaseInfo:
     """Get release information for a datasource.
 
@@ -468,7 +459,7 @@ def check_release(
     current_version: str | None = None,
     current_date: datetime | None = None,
     *,
-    checkers: dict[str, Callable[[], ReleaseInfo]],
+    checkers: Mapping[str, Callable[[], ReleaseInfo]],
 ) -> ReleaseInfo:
     """Check if a new release is available for a datasource.
 
@@ -507,7 +498,7 @@ def list_versions(
     datasource: str,
     *,
     known_datasources: Iterable[str],
-    downloaders: dict[str, type[_HasListVersions]],
+    downloaders: Mapping[str, type[_HasListVersions]],
 ) -> list[str]:
     """List all available archive versions for a datasource.
 
@@ -546,12 +537,12 @@ def download_datasource_with_release(
     datasource: str,
     output_dir: Path,
     *,
-    all_datasources: dict[str, _HasDownloadUrls],
-    urls_and_date: dict[str, UrlsAndDate],
+    all_datasources: Mapping[str, _HasDownloadUrls],
+    urls_and_date: Mapping[str, UrlsAndDate],
     decompress: bool = True,
     version: str | None = None,
     keys: list[str] | None = None,
-    tar_extractors: dict[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    tar_extractors: Mapping[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
     **kwargs: Any,
 ) -> tuple[dict[str, Path], datetime | None]:
     """Download all files for a datasource and report its release date.
@@ -594,12 +585,12 @@ def download_datasource(
     datasource: str,
     output_dir: Path,
     *,
-    all_datasources: dict[str, _HasDownloadUrls],
-    urls_and_date: dict[str, UrlsAndDate],
+    all_datasources: Mapping[str, _HasDownloadUrls],
+    urls_and_date: Mapping[str, UrlsAndDate],
     decompress: bool = True,
     version: str | None = None,
     keys: list[str] | None = None,
-    tar_extractors: dict[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    tar_extractors: Mapping[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
     **kwargs: Any,
 ) -> dict[str, Path]:
     """Download all files for a datasource.
