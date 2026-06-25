@@ -132,6 +132,9 @@ skip = [
 
 # MyPy, see https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
 plugins = [
     "pydantic.mypy",
 ]
@@ -212,6 +215,8 @@ ignore = [
 "docs/source/conf.py" = ["ERA001"]
 # Prints are okay in notebooks
 "notebooks/**/*.ipynb" = ["T201"]
+# assert is the normal way to write test expectations
+"tests/**/*.py" = ["S101"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

@@ -338,7 +338,10 @@ def resolve_ambiguous_with_xref(
         )
 
     decision = mismatch or gate_failure
-    assert decision is not None  # candidates is non-empty, so one branch always set this
+    if decision is None:
+        # Unreachable: candidates is non-empty, so the loop above always sets
+        # mismatch or gate_failure before falling through to here.
+        raise RuntimeError("no decision recorded for a non-empty candidate list")
     return "", None, decision
 
 

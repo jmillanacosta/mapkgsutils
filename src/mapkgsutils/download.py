@@ -1,23 +1,44 @@
-"""Generic file-download primitives shared by every datasource downloader."""
+"""Generic file-download primitives and datasource-agnostic release/version dispatch.
+
+The dispatchers here (:func:`get_latest_release_info`, :func:`list_versions`,
+:func:`get_download_urls`, :func:`resolve_release_date`,
+:func:`download_datasource`, :func:`download_datasource_with_release`,
+:func:`check_release`) know nothing about any specific datasource: each takes
+a small registry (a ``dict[str, Callable]`` or ``dict[str, type]``) supplied
+by the caller, mapping datasource names to that package's own per-source
+implementations.
+"""
 
 from __future__ import annotations
 
 import gzip
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Protocol
 
 import httpx
 from tqdm import tqdm
 
+from mapkgsutils.logging import logger
+
 __all__ = [
     "CloudflareBlockedError",
     "ReleaseInfo",
+    "check_release",
+    "download_datasource",
+    "download_datasource_with_release",
     "download_file",
+    "download_urls",
+    "get_download_urls",
     "get_file_last_modified",
+    "get_latest_release_info",
     "iter_with_progress",
+    "list_versions",
+    "resolve_datasource_urls",
+    "resolve_release_date",
 ]
 
 _CLOUDFLARE_HINTS = (
@@ -267,3 +288,383 @@ def _download_nogzip(
         ) as chunks:
             for chunk in chunks:
                 f.write(chunk)
+
+
+class _HasDownloadUrls(Protocol):
+    """Structural type for a datasource config: just enough for URL/date resolution."""
+
+    name: str
+    download_urls: dict[str, Any]
+
+
+class _HasListVersions(Protocol):
+    """Structural type for a downloader class: just enough to list archive versions."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Construct a downloader instance."""
+        ...
+
+    def list_versions(self) -> list[str]:
+        """List all available archive versions for this datasource."""
+        ...
+
+
+#: Per-datasource hook resolving download URLs and the upstream release date
+#: for a given version (``None`` meaning "latest"). Every entry shares this
+#: signature regardless of what each datasource actually needs from
+#: ``**kwargs`` (e.g. ``subset`` for ChEBI, ``species`` for Ensembl).
+UrlsAndDate = Callable[..., tuple[dict[str, str], datetime | None]]
+
+
+def _default_urls_and_date(
+    version: str | None, config: _HasDownloadUrls, **kwargs: Any
+) -> tuple[dict[str, str], datetime | None]:
+    """Fall back for datasources with no registered resolver: latest config URLs, no date."""
+    if version:
+        logger.warning(
+            "%s does not have versioned archives. Downloading latest version instead.",
+            config.name,
+        )
+    return dict(config.download_urls), None
+
+
+def resolve_datasource_urls(
+    datasource_lower: str,
+    config: _HasDownloadUrls,
+    version: str | None = None,
+    *,
+    urls_and_date: dict[str, UrlsAndDate],
+    **kwargs: Any,
+) -> tuple[dict[str, str], datetime | None]:
+    """Resolve download URLs and the source release date for a datasource.
+
+    The release date drives the SSSOM ``mapping_date`` of generated mapping
+    sets, so it should reflect when the upstream data was released rather
+    than when it was downloaded. *urls_and_date* supplies each datasource's
+    own most-specific resolution logic; when *datasource_lower* has no entry,
+    :func:`_default_urls_and_date` is used. Either way, a generic HTTP
+    ``Last-Modified`` lookup on the first URL is the final fallback when no
+    release date could be determined.
+
+    Args:
+        datasource_lower: Lowercase datasource name.
+        config: Datasource configuration.
+        version: Specific version to get URLs for.
+        urls_and_date: ``{datasource_name: resolver}`` registry.
+        **kwargs: Forwarded to the resolved per-datasource hook.
+
+    Returns:
+        Tuple of (file-key -> URL mapping, release date or None).
+    """
+    resolver: UrlsAndDate = urls_and_date.get(datasource_lower, _default_urls_and_date)
+    urls, release_date = resolver(version, config, **kwargs)
+
+    # Generic fallback: derive the release date from the file's Last-Modified
+    # header when a more specific signal was not available above. Must never
+    # raise: some sources (e.g. HMDB) sit behind Cloudflare and block even
+    # this lightweight HEAD request, and a date-resolution failure must not
+    # break the actual file download.
+    if release_date is None and urls:
+        first_url = next(iter(urls.values()))
+        try:
+            release_date = get_file_last_modified(first_url)
+        except CloudflareBlockedError:
+            logger.debug("Could not resolve release date for %s: Cloudflare-blocked.", first_url)
+
+    return urls, release_date
+
+
+def get_download_urls(
+    datasource: str,
+    version: str | None = None,
+    *,
+    all_datasources: dict[str, _HasDownloadUrls],
+    urls_and_date: dict[str, UrlsAndDate],
+    **kwargs: Any,
+) -> dict[str, str]:
+    """Get download URLs for a datasource.
+
+    Args:
+        datasource: Name of the datasource.
+        version: Specific version to get URLs for.
+        all_datasources: ``{datasource_name: config}`` registry.
+        urls_and_date: ``{datasource_name: resolver}`` registry, see
+            :func:`resolve_datasource_urls`.
+        **kwargs: Datasource-specific knobs forwarded to the resolved hook.
+
+    Returns:
+        Dictionary mapping file keys to URLs.
+    """
+    datasource_lower = datasource.lower()
+    config = all_datasources.get(datasource_lower)
+    if not config:
+        raise ValueError(f"Unknown datasource: {datasource}")
+    urls, _ = resolve_datasource_urls(
+        datasource_lower, config, version, urls_and_date=urls_and_date, **kwargs
+    )
+    return urls
+
+
+def resolve_release_date(
+    datasource: str,
+    version: str | None = None,
+    *,
+    all_datasources: dict[str, _HasDownloadUrls],
+    urls_and_date: dict[str, UrlsAndDate],
+    **kwargs: Any,
+) -> datetime | None:
+    """Resolve the upstream release date for a datasource/version.
+
+    This is the date used for the SSSOM ``mapping_date`` of generated mapping
+    sets. It does not download the data files (it may issue a lightweight
+    ``HEAD`` request to read a ``Last-Modified`` header). Prefer
+    :func:`download_datasource_with_release` when you are downloading
+    anyway, to avoid an extra round-trip.
+
+    Args:
+        datasource: Name of the datasource.
+        version: Specific version, when applicable.
+        all_datasources: ``{datasource_name: config}`` registry.
+        urls_and_date: ``{datasource_name: resolver}`` registry, see
+            :func:`resolve_datasource_urls`.
+        **kwargs: Datasource-specific knobs; see :func:`get_download_urls`.
+
+    Returns:
+        The release date, or None when it cannot be determined.
+    """
+    datasource_lower = datasource.lower()
+    config = all_datasources.get(datasource_lower)
+    if not config:
+        raise ValueError(f"Unknown datasource: {datasource}")
+    _, release_date = resolve_datasource_urls(
+        datasource_lower, config, version, urls_and_date=urls_and_date, **kwargs
+    )
+    return release_date
+
+
+def get_latest_release_info(
+    datasource: str, *, checkers: dict[str, Callable[[], ReleaseInfo]]
+) -> ReleaseInfo:
+    """Get release information for a datasource.
+
+    Args:
+        datasource: Name of the datasource.
+        checkers: ``{datasource_name: check_release_fn}`` registry.
+
+    Returns:
+        ReleaseInfo with the latest release details.
+
+    Raises:
+        ValueError: If the datasource is not supported.
+    """
+    checker = checkers.get(datasource.lower())
+    if checker is None:
+        raise ValueError(f"Unknown datasource: {datasource}. Supported: {sorted(checkers)}")
+    return checker()
+
+
+def check_release(
+    datasource: str,
+    current_version: str | None = None,
+    current_date: datetime | None = None,
+    *,
+    checkers: dict[str, Callable[[], ReleaseInfo]],
+) -> ReleaseInfo:
+    """Check if a new release is available for a datasource.
+
+    Args:
+        datasource: Name of the datasource.
+        current_version: Current version string to compare against.
+        current_date: Current release date to compare against.
+        checkers: ``{datasource_name: check_release_fn}`` registry.
+
+    Returns:
+        ReleaseInfo with is_new indicating if update is available.
+    """
+    info = get_latest_release_info(datasource, checkers=checkers)
+
+    if current_version and info.version:
+        info = ReleaseInfo(
+            datasource=info.datasource,
+            version=info.version,
+            release_date=info.release_date,
+            is_new=info.version != current_version,
+            files=info.files,
+        )
+    elif current_date and info.release_date:
+        info = ReleaseInfo(
+            datasource=info.datasource,
+            version=info.version,
+            release_date=info.release_date,
+            is_new=info.release_date > current_date,
+            files=info.files,
+        )
+
+    return info
+
+
+def list_versions(
+    datasource: str,
+    *,
+    known_datasources: Iterable[str],
+    downloaders: dict[str, type[_HasListVersions]],
+) -> list[str]:
+    """List all available archive versions for a datasource.
+
+    Delegates to the datasource's downloader class ``list_versions()``
+    method, which contains all source-specific retrieval logic.
+
+    Args:
+        datasource: Datasource name.
+        known_datasources: Every datasource name this package supports
+            (used only to distinguish "unknown datasource" from "known
+            datasource with no versioned archive").
+        downloaders: ``{datasource_name: downloader_class}`` registry;
+            datasources with no versioned archive are simply absent.
+
+    Returns:
+        Sorted list of version strings available for download.
+
+    Raises:
+        ValueError: If the datasource is unknown or has no versioned archive.
+    """
+    lower = datasource.lower()
+    known_lower = {d.lower() for d in known_datasources}
+    if lower not in known_lower:
+        raise ValueError(f"Unknown datasource: {datasource!r}. Supported: {sorted(known_lower)}")
+
+    cls = downloaders.get(lower)
+    if cls is None:
+        raise ValueError(
+            f"{datasource.upper()} does not maintain a versioned archive. "
+            "Only the latest release is available for download."
+        )
+    return cls().list_versions()
+
+
+def download_datasource_with_release(
+    datasource: str,
+    output_dir: Path,
+    *,
+    all_datasources: dict[str, _HasDownloadUrls],
+    urls_and_date: dict[str, UrlsAndDate],
+    decompress: bool = True,
+    version: str | None = None,
+    keys: list[str] | None = None,
+    tar_extractors: dict[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    **kwargs: Any,
+) -> tuple[dict[str, Path], datetime | None]:
+    """Download all files for a datasource and report its release date.
+
+    Args:
+        datasource: Name of the datasource.
+        output_dir: Directory to save files.
+        all_datasources: ``{datasource_name: config}`` registry.
+        urls_and_date: ``{datasource_name: resolver}`` registry, see
+            :func:`resolve_datasource_urls`.
+        decompress: Whether to decompress .gz files.
+        version: Specific version to download. Format depends on datasource.
+        keys: Optional list of file-key names to download.
+        tar_extractors: ``{datasource_name: extractor}`` registry for
+            datasources that publish a ``.tar.gz`` archive needing
+            member-level extraction rather than a plain download (e.g.
+            UniProt). Datasources without one are downloaded as-is.
+        **kwargs: Datasource-specific knobs forwarded to the resolved hook.
+
+    Returns:
+        Tuple of (file-key -> downloaded path mapping, release date or None).
+    """
+    datasource_lower = datasource.lower()
+    config = all_datasources.get(datasource_lower)
+    if not config:
+        raise ValueError(f"Unknown datasource: {datasource}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    urls, release_date = resolve_datasource_urls(
+        datasource_lower, config, version, urls_and_date=urls_and_date, **kwargs
+    )
+    if keys is not None:
+        urls = {k: v for k, v in urls.items() if k in keys}
+
+    extractor = (tar_extractors or {}).get(datasource_lower)
+    return download_urls(urls, output_dir, decompress, tar_extractor=extractor), release_date
+
+
+def download_datasource(
+    datasource: str,
+    output_dir: Path,
+    *,
+    all_datasources: dict[str, _HasDownloadUrls],
+    urls_and_date: dict[str, UrlsAndDate],
+    decompress: bool = True,
+    version: str | None = None,
+    keys: list[str] | None = None,
+    tar_extractors: dict[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Path]:
+    """Download all files for a datasource.
+
+    Same as :func:`download_datasource_with_release`, but discards the
+    resolved release date.
+
+    Returns:
+        Dictionary mapping file keys to downloaded paths.
+    """
+    files, _ = download_datasource_with_release(
+        datasource,
+        output_dir,
+        all_datasources=all_datasources,
+        urls_and_date=urls_and_date,
+        decompress=decompress,
+        version=version,
+        keys=keys,
+        tar_extractors=tar_extractors,
+        **kwargs,
+    )
+    return files
+
+
+def download_urls(
+    urls: dict[str, str],
+    output_dir: Path,
+    decompress: bool = True,
+    *,
+    tar_extractor: Callable[[Path, Path], dict[str, Path]] | None = None,
+) -> dict[str, Path]:
+    """Download files from URLs to output directory.
+
+    Args:
+        urls: Dictionary mapping file keys to URLs.
+        output_dir: Directory to save files.
+        decompress: Whether to decompress .gz files.
+        tar_extractor: When given, any ``.tar.gz`` URL is downloaded then
+            passed to this callable for member-level extraction instead of
+            being treated as a single downloaded file.
+
+    Returns:
+        Dictionary mapping file keys to downloaded paths.
+    """
+    downloaded: dict[str, Path] = {}
+
+    for key, url in urls.items():
+        filename = url.split("/")[-1]
+
+        if tar_extractor is not None and filename.endswith(".tar.gz"):
+            output_path = output_dir / filename
+            logger.info("Downloading %s: %s", key, url)
+            download_file(url, output_path, decompress_gz=False)
+            extracted = tar_extractor(output_path, output_dir)
+            downloaded.update(extracted)
+            logger.info("Extracted: %s", list(extracted.keys()))
+            continue
+
+        if decompress and filename.endswith(".gz"):
+            filename = filename[:-3]
+
+        output_path = output_dir / filename
+        logger.info("Downloading %s: %s", key, url)
+        download_file(url, output_path, decompress_gz=decompress)
+        downloaded[key] = output_path
+        logger.info("Saved to: %s", output_path)
+
+    return downloaded
