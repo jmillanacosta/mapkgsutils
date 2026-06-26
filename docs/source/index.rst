@@ -25,8 +25,6 @@ following:
   <https://docs.astral.sh/uv/guides/publish/#building-your-package>`_ - Releasing to
   PyPI with `uv publish
   <https://docs.astral.sh/uv/guides/publish/#publishing-your-package>`_
-- A command line interface with ``click``
-- A vanity CLI via python entrypoints
 - A `py.typed` file so other packages can use your type hints
 - Automated local workflows with `pre-commit <https://pre-commit.com/>`_
 - Automated running of tests on each push with `GitHub Actions
@@ -47,7 +45,6 @@ following:
 
     installation
     usage
-    cli
 
 ********************
  Indices and Tables

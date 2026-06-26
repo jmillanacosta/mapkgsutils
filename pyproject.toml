@@ -121,8 +121,8 @@ Repository = "https://github.com//mapkgsutils.git"
 Documentation = "https://mapkgsutils.readthedocs.io"
 Funding = "https://github.com/sponsors/jmillanacosta"
 
-[project.scripts]
-mapkgsutils = "mapkgsutils.cli:main"
+#[project.scripts]
+#mapkgsutils = "mapkgsutils.cli:main"
 
 [tool.cruft]
 skip = [
