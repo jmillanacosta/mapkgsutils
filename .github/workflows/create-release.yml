@@ -1,0 +1,78 @@
+name: Create Release
+
+on:
+  workflow_dispatch: 
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  PYTHON_VERSION: "3.10"
+  PACKAGE_NAME: mapkgsutils
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip
+          pip install uv
+
+      - name: Sync dependencies (uv)
+        run: |
+          uv sync --frozen
+
+      - name: Get version from package
+        id: get_version
+        run: |
+          VERSION=$(uv run python -c "from ${PACKAGE_NAME}.version import VERSION; print(VERSION)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag matches VERSION
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          EXPECTED="v${{ steps.get_version.outputs.version }}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "Tag ($TAG) does not match VERSION ($EXPECTED)"
+            exit 1
+          fi
+
+      - name: Check if release already exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists. Exiting."
+            exit 0
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --repo "${{ github.repository }}" \
+            --generate-notes
+
+      - name: Build distribution
+        run: uv build --sdist --wheel
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
