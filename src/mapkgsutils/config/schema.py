@@ -65,11 +65,11 @@ class DistributionEraSchema(BaseModel):
 class DatasourceConfigSchema(BaseModel):
     """Top-level schema for a ``config/<datasource>.yaml`` file.
 
-    ``name``, ``prefix``, and ``curie_base_url`` are required -- they are the
-    only fields :class:`~mapkgsutils.parsers.base.DatasourceConfig` declares
-    without a default. Every other recognized key is optional and permissive
-    in shape; unrecognized top-level keys are not an error here (see
-    :func:`validate_config_dict`), only a warning.
+    ``name``, ``prefix``, and ``curie_base_url`` are the only fields
+    :class:`~mapkgsutils.parsers.base.DatasourceConfig` declares without a
+    default, so they're required here too. Every other recognized key is
+    optional and permissive in shape. Unrecognized top-level keys just get a
+    warning (see :func:`validate_config_dict`), not a hard error.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -99,7 +99,6 @@ class DatasourceConfigSchema(BaseModel):
     distribution_eras: list[DistributionEraSchema] = Field(default_factory=list)
     xref_sources: list[XrefSourceSchema] = Field(default_factory=list)
     species: dict[str, Any] = Field(default_factory=dict)
-    genome_build: dict[str, Any] = Field(default_factory=dict)
     subset: dict[str, Any] = Field(default_factory=dict)
     mappingset: dict[str, Any] = Field(default_factory=dict)
     mapping: dict[str, Any] = Field(default_factory=dict)

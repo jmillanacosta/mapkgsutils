@@ -48,7 +48,7 @@ class DistributionEra:
     format: str | None = None
     from_version: str | None = None
     to_version: str | None = None
-    wayback: bool = False  # declarative only for now -- no resolver yet
+    wayback: bool = False  # declarative only for now, no resolver yet
 
 
 @dataclass
@@ -124,8 +124,6 @@ class DatasourceConfig:
     xref_sources: list[XrefSource] = field(default_factory=list)
     # Species this datasource publishes
     species: dict[str, Any] = field(default_factory=dict)
-    # Genome assembly/build metadata.
-    genome_build: dict[str, Any] = field(default_factory=dict)
     # Compound/entry subset this datasource publishes (e.g. ChEBI's
     # 3star/complete). Generic, config-driven counterpart to `species`.
     subset: dict[str, Any] = field(default_factory=dict)
@@ -299,7 +297,6 @@ def get_datasource_config(datasource_name: str, *, config_package: str) -> Datas
         distribution_eras=eras,
         xref_sources=xref_sources,
         species=raw.get("species") or {},
-        genome_build=raw.get("genome_build") or {},
         subset=raw.get("subset") or {},
         mappingset_metadata=raw.get("mappingset", {}),
         mapping_metadata=raw.get("mapping", {}),
@@ -507,16 +504,16 @@ def pair_hash(pri: str, sec: str) -> str:
     """Version-independent 16-hex-char digest for a (pri, sec) pair.
 
     The same pair always hashes identically, regardless of release/version
-    or product (species/subset). This is the join key a cross-release
-    consolidation layer uses to match a mapping across releases (to discover
-    when it first/last appeared) -- *not* what ends up in the ``record_id``
-    field (see :func:`mint_record_id`).
+    or product (species/subset). A cross-release consolidation layer uses
+    this as the join key to match a mapping across releases and discover
+    when it first/last appeared. It is not what ends up in the
+    ``record_id`` field; see :func:`mint_record_id` for that.
     """
     return hashlib.sha256(f"{pri}|{sec}".encode()).hexdigest()[:16]
 
 
 def mint_record_id(pri: str, sec: str, *, namespace: str) -> str:
-    """Mint a row's ``record_id`` -- the row's OWL Axiom IRI in SSSOM's RDF/OWL output.
+    """Mint a row's ``record_id``, the row's OWL Axiom IRI in SSSOM's RDF/OWL output.
 
     Scoped to *namespace* (typically a release- and product-specific prefix,
     see :meth:`BaseParser._record_namespace`), so the same (pri, sec) pair
@@ -528,7 +525,7 @@ def mint_record_id(pri: str, sec: str, *, namespace: str) -> str:
     confidence, ...) under the same IRI.
 
     The trailing 16 hex characters are always :func:`pair_hash`'s
-    version-independent digest -- use that function directly (not this one)
+    version-independent digest. Use that function directly, not this one,
     for cross-release matching/lookups.
     """
     return f"{namespace}{pair_hash(pri, sec)}"
@@ -1278,12 +1275,6 @@ class BaseParser(ABC):
         """
         self.version = version
         self.show_progress = show_progress
-        # Genome assembly/build for the SSSOM ``*_source_version`` fields.
-        # Default ``None`` -> resolved from config per species, or left to
-        # fall back to ``self.version``. Parsers that read a build straight
-        # from the data (e.g. an Ensembl-style ``mapping_session``) may set
-        # this, or override per mapping row.
-        self.genome_build: str | None = None
         # Release date of the source data, used for the SSSOM ``mapping_date``.
         # Set by the download layer to the upstream release date; falls back
         # to the version when that is an ISO date (e.g. quarterly
@@ -1370,7 +1361,7 @@ class BaseParser(ABC):
 
         ``None`` for most parsers (one release == one product). Override
         when a parser option selects a genuinely different dataset rather
-        than just a different output mode -- e.g. a species selector for a
+        than just a different output mode, e.g. a species selector for a
         multi-species datasource, where the same release number produces a
         disjoint set of mappings per species. Folded into ``mapping_set_id``
         and :meth:`_record_namespace` so two runs that differ only in this
@@ -1384,8 +1375,8 @@ class BaseParser(ABC):
         Mirrors ``mapping_set_id``'s ``{base}/{version}/{slug}`` ordering
         (see :meth:`create_mapping_set`) so a mapping's ``record_id`` is
         scoped to the same release/product as the mapping *set* it's
-        asserted in -- use this (instead of reading
-        ``mapping_metadata()["record_id"]`` directly) when building
+        asserted in. Use this, instead of reading
+        ``mapping_metadata()["record_id"]`` directly, when building
         per-row ``record_id`` values.
         """
         base = str(self.get_mapping_metadata().get("record_id") or "")
@@ -1717,74 +1708,13 @@ class BaseParser(ABC):
             return str(self.version)
         return date.today().isoformat()
 
-    def _species_build(self) -> str | None:
-        """Return the configured genome build for this run's species, if any.
-
-        Reads ``species.available[<species>].build`` from config.
-        ``self.species`` may be a canonical taxon ID (single-species runs)
-        or a datasource token (all-species runs), so both the ``available``
-        key and each entry's ``token`` are matched.
-
-        Returns:
-            The per-species build string, or ``None`` when not configured.
-        """
-        cfg = self._config
-        species = getattr(self, "species", None)
-        if not cfg or species is None:
-            return None
-        available = (cfg.species or {}).get("available") or {}
-        entry = available.get(species) or available.get(str(species))
-        if entry is None:
-            for value in available.values():
-                if isinstance(value, dict) and str(value.get("token")) == str(species):
-                    entry = value
-                    break
-        if isinstance(entry, dict) and entry.get("build"):
-            return str(entry["build"])
-        return None
-
-    def _genome_build(self) -> str | None:
-        """Resolve the genome assembly/build for the source-version fields.
-
-        The mapping set's release is already explicit in
-        ``mapping_set_version`` / ``mapping_set_id``, so
-        ``subject_source_version`` / ``object_source_version`` carry the
-        genome build (e.g. ``"GRCh38"``) rather than repeating the release.
-        Resolution order:
-
-        1. an explicit :attr:`genome_build` override (e.g. a build a parser
-           discovered straight from the data);
-        2. the per-species build from ``species.available[<species>].build``;
-        3. the datasource-wide ``genome_build.default`` -- but *only* for
-           single-build datasources (those with no ``species.available`` map,
-           e.g. a human-only datasource). A multi-species datasource never
-           falls through to ``default``, so it can't stamp one build (say
-           GRCh38) onto a non-human species; an uncurated species is left to
-           fall back to the release instead.
-
-        Returns:
-            The resolved build, or ``None`` when none is configured (e.g.
-            ChEBI), so callers fall back to :attr:`version`.
-        """
-        if self.genome_build:
-            return self.genome_build
-        species_build = self._species_build()
-        if species_build:
-            return species_build
-        cfg = self._config
-        if not cfg or (cfg.species or {}).get("available"):
-            return None
-        default = (cfg.genome_build or {}).get("default")
-        return str(default) if default else None
-
     def _source_version(self) -> str | None:
         """Return the value for the set-level SSSOM ``*_source_version`` fields.
 
-        The genome build when one is resolvable (see :meth:`_genome_build`),
-        otherwise the release :attr:`version` (unchanged behaviour for
-        datasources without a genome build, e.g. ChEBI).
+        Always the analyzed release, :attr:`version`. The same field means
+        the same thing across every datasource's mapping set.
         """
-        return self._genome_build() or self.version
+        return self.version
 
     def create_mapping_set(
         self,

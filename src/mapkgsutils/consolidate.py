@@ -1,15 +1,12 @@
 """Generic mapping-date consolidation: cache I/O and the release/date walk skeleton.
 
-A versioned datasource's per-row deprecation/change date isn't always
-recorded anywhere in a single release -- recovering it means walking every
-historical release once and recording the first/last release each mapping
-(keyed by its version-independent pair hash) was seen in. This module is the
-datasource-agnostic half of that: cache I/O, the release-walk and
-single-pass-date loop shapes, and materializing the cache back into a real
-SSSOM mapping set. Per-datasource dispatch (which versions exist, how to
-download/parse one, which mapping-set class to build) is supplied by the
-caller as plain callables/values -- see :mod:`pysec2pri.consolidate` for a
-concrete binding.
+A versioned datasource doesn't always record when a mapping first appeared.
+Recovering that date means walking every historical release once and
+recording the first/last release each mapping (keyed by its
+version-independent pair hash) was seen in.
+
+This module provides the cache I/O, the release-walk and single-pass-date
+loop shapes, and rebuilding the cache back into a real SSSOM mapping set.
 """
 
 from __future__ import annotations
@@ -44,9 +41,9 @@ CACHE_COLUMNS = (
     "last_seen_version",
     "last_seen_date",
     # JSON-encoded snapshot of the mapping's own fields (subject_id,
-    # object_id, predicate_id, ...) as last seen -- used to materialize the
-    # consolidated index as a real SSSOM mapping set (see
-    # build_consolidated_mapping_set). Empty for legacy/hand-built rows.
+    # object_id, predicate_id, ...) as last seen. Used to rebuild the cache
+    # into a real SSSOM mapping set later (see build_consolidated_mapping_set).
+    # Empty for legacy/hand-built rows.
     "fields_json",
 )
 
@@ -129,12 +126,12 @@ def _mapping_fields_json(m: Any) -> str:
     """JSON-encode a mapping's own fields (excluding mapping_date/record_id).
 
     Snapshots a mapping's current shape (subject_id, object_id,
-    predicate_id, ...) so the consolidated index can later be materialized
-    as a real SSSOM mapping set (see :func:`build_consolidated_mapping_set`).
-    ``default=str`` handles enum-valued fields like ``mapping_cardinality``,
-    which round-trip cleanly back through ``Mapping(**fields)``. Returns
-    ``"{}"`` for non-dataclass stand-ins (e.g. test doubles) that don't carry
-    a full field set -- callers skip materializing those rows.
+    predicate_id, ...) so :func:`build_consolidated_mapping_set` can rebuild
+    it into a real SSSOM mapping set later. ``default=str`` handles
+    enum-valued fields like ``mapping_cardinality``, which round-trip
+    cleanly back through ``Mapping(**fields)``. Returns ``"{}"`` for
+    non-dataclass stand-ins (e.g. test doubles); callers skip those rows
+    rather than materializing them.
     """
     from dataclasses import fields as dataclass_fields
     from dataclasses import is_dataclass
@@ -203,15 +200,18 @@ def build_consolidated_mapping_set(
     mapping_set_class: type[Any],
     record_namespace: str,
     mapping_set_metadata: Mapping[str, Any],
+    cardinality_on: str = "id",
 ) -> Any:
     """Materialize the consolidated index as a real SSSOM mapping set.
 
-    Each record's stored field snapshot (from the most recent release where
-    it was seen) is rebuilt into a ``Mapping``, with ``mapping_date``
-    overridden to its ``first_seen_date`` -- the date of appearance, rather
-    than whatever date the snapshot's own release happened to carry -- and
-    ``record_id`` re-scoped with a trailing ``consolidate`` segment, marking
-    the IRI as a derived, cross-release product.
+    Each row's ``mapping_date`` and ``subject_source_version``/
+    ``object_source_version`` are overridden from the record's
+    ``first_seen_date``/``first_seen_version``: the date of first
+    appearance and the release it first appeared in, rather than whatever
+    the last-seen snapshot happened to carry. The two stay in their own
+    fields. A release version (e.g. ChEBI's "183") is not a date and never
+    goes in ``mapping_date``, and a real date never goes in the version
+    fields.
 
     Args:
         records: ``record_id -> fields`` dict as read by :func:`read_cache`.
@@ -221,6 +221,8 @@ def build_consolidated_mapping_set(
             ``record_id``.
         mapping_set_metadata: ``mapping_set_id``/``curie_map``/``license``/...
             metadata for the resulting mapping set.
+        cardinality_on: ``"id"`` or ``"label"``, forwarded to
+            :meth:`~mapkgsutils.parsers.base.BaseMappingSet._compute_cardinalities`.
 
     Returns:
         A ``mapping_set_class`` instance with cardinalities computed.
@@ -243,7 +245,15 @@ def build_consolidated_mapping_set(
             # nothing to materialize into a real Mapping; date bookkeeping
             # for them still lives in the TSV cache, just not in the SSSOM.
             continue
+        # mapping_date and subject/object_source_version are semantically
+        # distinct SSSOM fields: a release version (e.g. ChEBI's "183") is
+        # never a date, and must never end up in mapping_date or vice versa.
+        # Override both from first_seen_*, not whatever the snapshot's own
+        # (last-seen) values were.
         row_fields["mapping_date"] = fields.get("first_seen_date") or None
+        first_seen_version = fields.get("first_seen_version") or None
+        row_fields["subject_source_version"] = first_seen_version
+        row_fields["object_source_version"] = first_seen_version
         row_fields["record_id"] = f"{record_namespace}{version_label}/consolidate/{pair_key}"
         mappings.append(SSSOMMapping(**row_fields))
 
@@ -257,7 +267,7 @@ def build_consolidated_mapping_set(
         mapping_set_description=mapping_set_metadata.get("mapping_set_description"),
         license=mapping_set_metadata.get("license"),
     )
-    mapping_set.compute_cardinalities()
+    mapping_set._compute_cardinalities(on=cardinality_on)
     return mapping_set
 
 
@@ -268,6 +278,7 @@ def write_consolidated_sssom(
     mapping_set_class: type[Any],
     record_namespace: str,
     mapping_set_metadata: Mapping[str, Any],
+    cardinality_on: str = "id",
 ) -> Path:
     """Build and save the companion SSSOM mapping set next to the cache file.
 
@@ -278,6 +289,8 @@ def write_consolidated_sssom(
         record_namespace: Base IRI namespace for rebuilt ``record_id`` values.
         mapping_set_metadata: ``mapping_set_id``/``curie_map``/``license``/...
             metadata for the resulting mapping set.
+        cardinality_on: ``"id"`` or ``"label"``, see
+            :func:`build_consolidated_mapping_set`.
 
     Returns:
         Path to the written SSSOM TSV (see :func:`sssom_output_path`).
@@ -290,6 +303,7 @@ def write_consolidated_sssom(
         mapping_set_class=mapping_set_class,
         record_namespace=record_namespace,
         mapping_set_metadata=mapping_set_metadata,
+        cardinality_on=cardinality_on,
     )
     output_path = sssom_output_path(cache_path)
     mapping_set.save("sssom", output_path)
@@ -341,9 +355,9 @@ def consolidate_by_release(
         try:
             mapping_set = run_one_version(v)
             release_date = resolve_release_date(v)
-            # Empty (not the version label v) when no real release date is
-            # resolvable -- v is a version, not a date, and isn't always
-            # date-shaped (e.g. ChEBI's plain release numbers).
+            # Empty when no real release date resolves. v is a version, not
+            # a date, and isn't always date-shaped (e.g. ChEBI's plain
+            # release numbers), so don't store it as one.
             date_str = release_date.date().isoformat() if release_date else ""
 
             for m in mapping_set.mappings or []:

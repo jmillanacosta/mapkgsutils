@@ -1,18 +1,13 @@
-"""Disambiguate ambiguous secondary with context: label, id, and xref evidence.
+"""Disambiguate ambiguous mappings with context: label, id, and xref evidence.
 
 :class:`ContextSpec` describes a per-row piece of evidence that can
 be used to decide which of those two entities a given ambiguous cell actually
 means:
 
-* ``label``: an alias/synonym string.
+* ``label``: a label string.
 * ``id``    : a related/foreign identifier string.
 * ``xref``  : a cross-reference token (e.g. an Ensembl ID) resolved through
   an independent :class:`XrefMapping` crosswalk table.
-
-All three are resolved the same way: confirm *secondary usage* (the evidence
-points to the mapping's target), confirm *primary usage* (the evidence points
-to the token's own current identity), or leave the cell unresolved. Every
-attempt can be recorded as a :class:`DecisionRecord` for an auditable TSV log.
 """
 
 from __future__ import annotations
@@ -35,8 +30,8 @@ class XrefRecord:
 
     Args:
         subject_id: The cross-reference token, e.g. ``"ENSG00000197471"``.
-        object_id: The target primary id, e.g. ``"HGNC:11249"``.
-        object_label: The target primary label, e.g. ``"SPN"``.
+        object_id: The target id, e.g. ``"HGNC:11249"``.
+        object_label: The target label, e.g. ``"SPN"``.
         predicate_id: The equivalence predicate, e.g. ``"skos:exactMatch"``.
             ``None`` when the source table carries no predicate column.
     """
@@ -93,8 +88,8 @@ def load_xref_mapping(
     Args:
         path: Path to the crosswalk file.
         subject_col: Column with the cross-reference token.
-        object_col: Column with the target primary id.
-        object_label_col: Column with the target primary label (optional).
+        object_col: Column with the target id.
+        object_label_col: Column with the target label (optional).
         predicate_col: Column with the equivalence predicate (optional).
         sep: Field delimiter.
 
@@ -257,13 +252,12 @@ def resolve_ambiguous_with_xref(
     """Attempt to resolve an ambiguous token using a cross-reference token.
 
     Args:
-        token: The ambiguous label or ID (appears both as a current primary
-            entry and as a secondary one pointing elsewhere).
+        token: The ambiguous label or ID.
         xref_token: The row's cross-reference token, e.g. an Ensembl ID.
-        lkp: ``{secondary_token: resolved_token}`` lookup.
+        lkp: ``{token: resolved_token}`` lookup.
         xref_index: ``{xref_token: [XrefRecord, ...]}`` (see
             :meth:`XrefMapping.by_subject`).
-        token_to_id: ``{primary_token: primary_id}``. ``None`` when *token*
+        token_to_id: ``{token: id}``. ``None`` when *token*
             is already a CURIE (ID mode).
         accepted_predicates: Equivalence predicates to accept. ``None``
             accepts any predicate.
