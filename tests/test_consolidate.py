@@ -379,7 +379,7 @@ def test_write_consolidated_sssom_writes_a_companion_file(tmp_path: Path) -> Non
     )
     write_meta(meta_path, "245")
 
-    output_path = write_consolidated_sssom(
+    output_path, mapping_set = write_consolidated_sssom(
         cache_path,
         meta_path,
         mapping_set_class=BaseMappingSet,
@@ -389,3 +389,4 @@ def test_write_consolidated_sssom_writes_a_companion_file(tmp_path: Path) -> Non
 
     assert output_path.exists()
     assert "SEC:1" in output_path.read_text(encoding="utf-8")
+    assert mapping_set.mappings

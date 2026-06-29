@@ -279,7 +279,7 @@ def write_consolidated_sssom(
     record_namespace: str,
     mapping_set_metadata: Mapping[str, Any],
     cardinality_on: str = "id",
-) -> Path:
+) -> tuple[Path, Any]:
     """Build and save the companion SSSOM mapping set next to the cache file.
 
     Args:
@@ -293,7 +293,8 @@ def write_consolidated_sssom(
             :func:`build_consolidated_mapping_set`.
 
     Returns:
-        Path to the written SSSOM TSV (see :func:`sssom_output_path`).
+        ``(output_path, mapping_set)``: the path of the written SSSOM TSV
+        (see :func:`sssom_output_path`) and the in-memory mapping set.
     """
     records = read_cache(cache_path)
     last_version = read_meta(meta_path)
@@ -307,7 +308,7 @@ def write_consolidated_sssom(
     )
     output_path = sssom_output_path(cache_path)
     mapping_set.save("sssom", output_path)
-    return output_path
+    return output_path, mapping_set
 
 
 def consolidate_by_release(
