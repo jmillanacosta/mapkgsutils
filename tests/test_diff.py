@@ -122,7 +122,7 @@ def test_diff_sssom_files() -> None:
         assert diff.removed_count == 1
         assert diff.added_count == 1
 
-        # No version header at all: both versions are None, not an error.
+        # No version header at all: both versions are None.
         new_file.write_text("subject_id\tobject_id\nPRIMARY1\tSECONDARY1\n")
         old_file.write_text("subject_id\tobject_id\nPRIMARY1\tSECONDARY1\n")
         no_version_diff = diff_sssom_files(old_file, new_file)

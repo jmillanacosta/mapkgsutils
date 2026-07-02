@@ -69,7 +69,7 @@ class DatasourceConfigSchema(BaseModel):
     :class:`~mapkgsutils.parsers.base.DatasourceConfig` declares without a
     default, so they're required here too. Every other recognized key is
     optional and permissive in shape. Unrecognized top-level keys just get a
-    warning (see :func:`validate_config_dict`), not a hard error.
+    warning (see :func:`validate_config_dict`).
     """
 
     model_config = ConfigDict(extra="allow")

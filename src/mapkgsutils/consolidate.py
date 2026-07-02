@@ -1,12 +1,18 @@
-"""Generic mapping-date consolidation: cache I/O and the release/date walk skeleton.
+"""Generic mapping-date consolidation: cache I/O and the consolidation walk.
 
 A versioned datasource doesn't always record when a mapping first appeared.
 Recovering that date means walking every historical release once and
 recording the first/last release each mapping (keyed by its
 version-independent pair hash) was seen in.
 
-This module provides the cache I/O, the release-walk and single-pass-date
-loop shapes, and rebuilding the cache back into a real SSSOM mapping set.
+The single public entry point is :func:`consolidate`. It collects all
+mappings using all available provenance: each mapping's row date
+(``mapping_date``) is kept distinct from the release version it first
+appeared in (``subject_source_version``/``object_source_version``). When a
+versioned archive is available (``list_versions`` is provided) it walks
+every release oldest-first; otherwise it does a single current parse and
+keeps every mapping, dated or not. This module also rebuilds the cache back
+into a real SSSOM mapping set.
 """
 
 from __future__ import annotations
@@ -23,8 +29,7 @@ from mapkgsutils.parsers.base import _cmp_versions
 __all__ = [
     "CACHE_COLUMNS",
     "build_consolidated_mapping_set",
-    "consolidate_by_date",
-    "consolidate_by_release",
+    "consolidate",
     "load_mapping_dates",
     "read_cache",
     "read_meta",
@@ -100,8 +105,36 @@ def write_meta(meta_path: Path, last_version: str) -> None:
     meta_path.write_text(json.dumps({"last_version": last_version}), encoding="utf-8")
 
 
+def _per_row_date(fields: Mapping[str, str]) -> str:
+    """Return the parser's own per-row ``mapping_date`` from a cache row's snapshot.
+
+    The per-row date is carried inside ``fields_json`` (see
+    :func:`_mapping_fields_json`). Returns ``""`` when the snapshot is
+    absent, unparseable, or has no ``mapping_date``.
+    """
+    fields_json = fields.get("fields_json") or ""
+    if not fields_json:
+        return ""
+    try:
+        row = json.loads(fields_json)
+    except json.JSONDecodeError:
+        return ""
+    return str(row.get("mapping_date") or "")
+
+
+def _best_date(fields: Mapping[str, str]) -> str:
+    """Best available date for a cache row: the parser's per-row date, else first-seen.
+
+    A mapping's own ``mapping_date`` (e.g. an Ensembl ``stable_id_event``
+    date) is release-independent and more precise than the release it first
+    appeared in, so it wins when present. Otherwise fall back to the
+    first-seen release date. ``""`` when neither is available.
+    """
+    return _per_row_date(fields) or fields.get("first_seen_date") or ""
+
+
 def load_mapping_dates(cache_path: Path) -> dict[str, str]:
-    """Load the consolidated ``record_id -> first_seen_date`` index at *cache_path*.
+    """Load the consolidated ``record_id -> best date`` index at *cache_path*.
 
     Safe to call even when the index hasn't been built yet: returns ``{}``.
 
@@ -109,25 +142,24 @@ def load_mapping_dates(cache_path: Path) -> dict[str, str]:
         cache_path: Path to the cache TSV (see :func:`write_cache`).
 
     Returns:
-        Dict mapping each ``record_id`` to its first-seen ISO date string.
-        Records walked but never assigned a real release date (e.g. an
-        unresolvable ``Last-Modified``) are omitted, leaving their
-        ``mapping_date`` unset rather than passing through a non-date value.
+        Dict mapping each ``record_id`` to its best available ISO date
+        string: the mapping's own per-row ``mapping_date`` when the parser
+        produced one, else the first-seen release date. Records with no date
+        at all are omitted, leaving their ``mapping_date`` unset rather than
+        passing through a non-date value.
     """
     records = read_cache(cache_path)
-    return {
-        rid: fields["first_seen_date"]
-        for rid, fields in records.items()
-        if fields.get("first_seen_date")
-    }
+    return {rid: date for rid, fields in records.items() if (date := _best_date(fields))}
 
 
 def _mapping_fields_json(m: Any) -> str:
-    """JSON-encode a mapping's own fields (excluding mapping_date/record_id).
+    """JSON-encode a mapping's own fields (excluding record_id).
 
     Snapshots a mapping's current shape (subject_id, object_id,
-    predicate_id, ...) so :func:`build_consolidated_mapping_set` can rebuild
-    it into a real SSSOM mapping set later. ``default=str`` handles
+    predicate_id, mapping_date, ...) so :func:`build_consolidated_mapping_set`
+    can rebuild it into a real SSSOM mapping set later. The parser's own
+    per-row ``mapping_date`` is kept (it's release-independent), distinct
+    from the first-seen release version. ``default=str`` handles
     enum-valued fields like ``mapping_cardinality``, which round-trip
     cleanly back through ``Mapping(**fields)``. Returns ``"{}"`` for
     non-dataclass stand-ins (e.g. test doubles); callers skip those rows
@@ -141,46 +173,93 @@ def _mapping_fields_json(m: Any) -> str:
     fields = {
         f.name: getattr(m, f.name)
         for f in dataclass_fields(m)
-        if f.name not in ("mapping_date", "record_id") and getattr(m, f.name, None) is not None
+        if f.name != "record_id" and getattr(m, f.name, None) is not None
     }
     return json.dumps(fields, default=str)
 
 
-def consolidate_by_date(
+def consolidate(
     cache_path: Path,
     meta_path: Path,
     *,
-    run_one_version: Callable[[], Any],
-) -> bool:
-    """Single-pass "date" mode: capture each row's own real ``mapping_date``.
+    label: str,
+    run_one_version: Callable[[str | None], Any],
+    list_versions: Callable[[], list[str]] | None = None,
+    resolve_release_date: Callable[[str], datetime | None] | None = None,
+    show_progress: bool = True,
+    force: bool = False,
+) -> None:
+    """Build the first-seen-date index for a datasource, collecting all provenance.
+
+    Keeps every mapping and every available piece of provenance.
+
+    - **``list_versions`` provided** (versioned archive, e.g. ChEBI/HGNC/
+      UniProt/Ensembl): walk every release oldest-first, calling
+      ``run_one_version(v)`` per release and recording the first/last release
+      each mapping was seen in. Resumes from :func:`read_meta` unless
+      *force*. This collects the full historical set.
+    - **``list_versions`` is ``None``** (no versioned archive, e.g. NCBI/
+      VGNC): a single current parse via ``run_one_version(None)`` caching the
+      *full* mapping set — every mapping kept, stamped with its own per-row
+      date when present and left undated otherwise.
 
     Args:
-        cache_path: Path to the cache TSV to write.
-        meta_path: Path to the ``last_version`` sidecar to write.
-        run_one_version: Zero-arg callable returning a freshly parsed
-            mapping set (the current/latest release, already bound to
-            whatever datasource/mapping-kind/kwargs the caller needs).
-
-    Returns:
-        ``True`` and writes the cache when the mapping set produced at
-        least one real per-row date; ``False`` (cache untouched) when it
-        produced none, so the caller can fall back to a release-walk.
+        cache_path: Path to the cache TSV to read/write.
+        meta_path: Path to the ``last_version`` sidecar to read/write.
+        label: Datasource name, used only for the progress bar/log messages.
+        run_one_version: Callable taking a version string (or ``None`` for
+            the single-parse path) and returning a freshly parsed mapping set
+            for it.
+        list_versions: Zero-arg callable returning every available version,
+            oldest first, or ``None`` when the datasource has no versioned
+            archive.
+        resolve_release_date: Callable taking a version string and returning
+            its upstream release date, or ``None`` when unresolvable. Used
+            only on the versioned-archive path.
+        show_progress: Whether to show a progress bar over releases.
+        force: Re-scan every release from scratch, ignoring any existing
+            cache/resume state. Versioned-archive path only.
     """
-    mapping_set = run_one_version()
-    dated = [m for m in (mapping_set.mappings or []) if getattr(m, "mapping_date", None)]
-    if not dated:
-        return False
+    if list_versions is None:
+        _consolidate_single_parse(cache_path, meta_path, run_one_version=run_one_version)
+        return
+    _consolidate_release_walk(
+        cache_path,
+        meta_path,
+        label=label,
+        list_versions=list_versions,
+        run_one_version=run_one_version,
+        resolve_release_date=resolve_release_date,
+        show_progress=show_progress,
+        force=force,
+    )
 
+
+def _consolidate_single_parse(
+    cache_path: Path,
+    meta_path: Path,
+    *,
+    run_one_version: Callable[[str | None], Any],
+) -> None:
+    """Single-parse path: cache the full current mapping set, dated or not.
+
+    Every mapping is kept — stamped with its own per-row ``mapping_date``
+    when the parser produced one, left undated otherwise — so no mapping is
+    dropped just because it carries no date.
+    """
+    mapping_set = run_one_version(None)
     version_label = str(getattr(mapping_set, "mapping_set_version", None) or "current")
     records: dict[str, dict[str, str]] = {}
-    for m in dated:
+    for m in mapping_set.mappings or []:
         # record_id is release-scoped; its trailing 16 hex chars are always
         # the version-independent pair hash (see mapkgsutils.parsers.base.pair_hash),
         # which is what must match across releases.
         pair_key = str(getattr(m, "record_id", None) or "")[-16:]
         if not pair_key:
             continue
-        date_str = str(m.mapping_date)
+        # The mapping's own per-row date survives in fields_json; first_seen_date
+        # mirrors it so undated rows simply stay undated rather than dropping out.
+        date_str = str(m.mapping_date) if getattr(m, "mapping_date", None) else ""
         records[pair_key] = {
             "first_seen_version": version_label,
             "first_seen_date": date_str,
@@ -190,7 +269,6 @@ def consolidate_by_date(
         }
     write_cache(cache_path, records)
     write_meta(meta_path, version_label)
-    return True
 
 
 def build_consolidated_mapping_set(
@@ -204,14 +282,17 @@ def build_consolidated_mapping_set(
 ) -> Any:
     """Materialize the consolidated index as a real SSSOM mapping set.
 
-    Each row's ``mapping_date`` and ``subject_source_version``/
-    ``object_source_version`` are overridden from the record's
-    ``first_seen_date``/``first_seen_version``: the date of first
-    appearance and the release it first appeared in, rather than whatever
-    the last-seen snapshot happened to carry. The two stay in their own
-    fields. A release version (e.g. ChEBI's "183") is not a date and never
-    goes in ``mapping_date``, and a real date never goes in the version
-    fields.
+    ``mapping_date`` and ``subject_source_version``/``object_source_version``
+    are distinct SSSOM fields and each is populated from its proper source:
+
+    - ``mapping_date`` ← the mapping's own per-row date (carried in the
+      snapshot's ``fields_json``) when present, else the first-seen release
+      date. The per-row event date is release-independent and more precise.
+    - ``subject_source_version``/``object_source_version`` ← the first-seen
+      release **version**: the release the pair first appeared in.
+
+    A release version (e.g. ChEBI's "183") is not a date and never goes in
+    ``mapping_date``, and a real date never goes in the version fields.
 
     Args:
         records: ``record_id -> fields`` dict as read by :func:`read_cache`.
@@ -248,9 +329,12 @@ def build_consolidated_mapping_set(
         # mapping_date and subject/object_source_version are semantically
         # distinct SSSOM fields: a release version (e.g. ChEBI's "183") is
         # never a date, and must never end up in mapping_date or vice versa.
-        # Override both from first_seen_*, not whatever the snapshot's own
-        # (last-seen) values were.
-        row_fields["mapping_date"] = fields.get("first_seen_date") or None
+        # Prefer the mapping's own per-row date (already in row_fields from
+        # the snapshot); fall back to the first-seen release date. The
+        # version fields always come from first_seen_version.
+        row_fields["mapping_date"] = (
+            row_fields.get("mapping_date") or fields.get("first_seen_date") or None
+        )
         first_seen_version = fields.get("first_seen_version") or None
         row_fields["subject_source_version"] = first_seen_version
         row_fields["object_source_version"] = first_seen_version
@@ -311,18 +395,18 @@ def write_consolidated_sssom(
     return output_path, mapping_set
 
 
-def consolidate_by_release(
+def _consolidate_release_walk(
     cache_path: Path,
     meta_path: Path,
     *,
     label: str,
     list_versions: Callable[[], list[str]],
-    run_one_version: Callable[[str], Any],
-    resolve_release_date: Callable[[str], datetime | None],
+    run_one_version: Callable[[str | None], Any],
+    resolve_release_date: Callable[[str], datetime | None] | None,
     show_progress: bool = True,
     force: bool = False,
 ) -> None:
-    """Historical-walk "release" mode: track first/last-seen release per mapping.
+    """Versioned-archive path: track first/last-seen release per mapping.
 
     Args:
         cache_path: Path to the cache TSV to read/write.
@@ -355,10 +439,8 @@ def consolidate_by_release(
     for v in iterator:
         try:
             mapping_set = run_one_version(v)
-            release_date = resolve_release_date(v)
-            # Empty when no real release date resolves. v is a version, not
-            # a date, and isn't always date-shaped (e.g. ChEBI's plain
-            # release numbers), so don't store it as one.
+            release_date = resolve_release_date(v) if resolve_release_date else None
+            # Empty when no real release date resolves.
             date_str = release_date.date().isoformat() if release_date else ""
 
             for m in mapping_set.mappings or []:

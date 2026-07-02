@@ -1360,7 +1360,7 @@ class BaseParser(ABC):
         """Extra IRI path segment identifying the run's data product.
 
         ``None`` for most parsers (one release == one product). Override
-        when a parser option selects a genuinely different dataset rather
+        when a parser option selects a different dataset rather
         than just a different output mode, e.g. a species selector for a
         multi-species datasource, where the same release number produces a
         disjoint set of mappings per species. Folded into ``mapping_set_id``
