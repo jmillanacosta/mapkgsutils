@@ -3,19 +3,63 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from sssom import MappingSetDataFrame
 
 if TYPE_CHECKING:
     from mapkgsutils.parsers.base import BaseMappingSet
 
+_M = TypeVar("_M", bound="BaseMappingSet")
+
 __all__ = [
+    "read_sssom",
     "write_json",
     "write_owl",
     "write_rdf",
     "write_sssom",
 ]
+
+
+def _mapping_set_from_document(src: Any, converter: Any, mapping_set_class: type[_M]) -> _M:
+    """Build *mapping_set_class* from a parsed sssom mapping set and its converter."""
+    from dataclasses import fields as dataclass_fields
+
+    kwargs = {
+        f.name: v for f in dataclass_fields(src) if (v := getattr(src, f.name, None)) is not None
+    }
+    kwargs["curie_map"] = dict(converter.prefix_map) or kwargs.get("curie_map") or {}
+    return mapping_set_class(**kwargs)
+
+
+def read_sssom(
+    path: Path | str,
+    *,
+    mapping_set_class: type[_M],
+    on: str | None = None,
+) -> _M:
+    """Load an SSSOM TSV into *mapping_set_class*, a thin wrapper over sssom's parser.
+
+    Carries over the file's mappings, metadata and curie_map. When *on* is
+    ``"id"``/``"label"`` cardinalities are recomputed so the result matches a
+    freshly parsed set.
+
+    Args:
+        path: Path to the SSSOM TSV file.
+        mapping_set_class: Concrete :class:`BaseMappingSet` subclass to build.
+        on: ``"id"`` or ``"label"`` to recompute cardinalities, or ``None``.
+
+    Returns:
+        A ``mapping_set_class`` instance populated from the file.
+    """
+    from sssom.parsers import parse_sssom_table, to_mapping_set_document
+
+    msdf = parse_sssom_table(str(path))
+    src = to_mapping_set_document(msdf).mapping_set
+    mapping_set = _mapping_set_from_document(src, msdf.converter, mapping_set_class)
+    if on is not None:
+        mapping_set._compute_cardinalities(on=on)
+    return mapping_set
 
 
 def write_sssom(

@@ -1811,6 +1811,52 @@ class BaseParser(ABC):
 
         return mapping_set
 
+    def load(self, path: Path | str, *, mapping_type: str | None = None) -> BaseMappingSet:
+        """Load an SSSOM file back into this parser's own mapping-set class.
+
+        Returns the same object :meth:`create_mapping_set` produces. The class
+        is taken from *mapping_type*, else inferred as ``"id"`` when the
+        mappings carry a ``subject_id`` and ``"label"`` when they don't. A
+        ``mapping_set_id`` that doesn't match this datasource's configured base
+        is warned about but still loaded.
+
+        Args:
+            path: Path to the SSSOM TSV file.
+            mapping_type: ``"id"``/``"label"`` to force the class, or ``None``
+                to infer it from the mappings.
+
+        Returns:
+            The datasource's :attr:`mapping_set_classes` instance for the
+            resolved type, with cardinalities computed.
+        """
+        from sssom.parsers import parse_sssom_table, to_mapping_set_document
+
+        from mapkgsutils.exports import _mapping_set_from_document
+
+        msdf = parse_sssom_table(str(path))
+        src = to_mapping_set_document(msdf).mapping_set
+
+        found = str(getattr(src, "mapping_set_id", "") or "")
+        expected = str(self.get_mappingset_metadata().get("mapping_set_id") or "")
+        if expected and not found.startswith(expected):
+            logger.warning(
+                "Loaded mapping_set_id %r does not match %s base %r",
+                found,
+                self.datasource_name,
+                expected,
+            )
+
+        if mapping_type is None:
+            has_subject_id = any(getattr(m, "subject_id", None) for m in (src.mappings or []))
+            mapping_type = "id" if has_subject_id else "label"
+        mapping_set_class = self.mapping_set_classes.get(
+            mapping_type, self.mapping_set_classes["id"]
+        )
+
+        mapping_set = _mapping_set_from_document(src, msdf.converter, mapping_set_class)
+        mapping_set._compute_cardinalities(on=mapping_type)
+        return mapping_set
+
 
 __all__ = [
     "WITHDRAWN_ENTRY",
