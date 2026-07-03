@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from sssom import MappingSetDataFrame
-
 if TYPE_CHECKING:
+    from sssom import MappingSetDataFrame
+
     from mapkgsutils.parsers.base import BaseMappingSet
 
 _M = TypeVar("_M", bound="BaseMappingSet")

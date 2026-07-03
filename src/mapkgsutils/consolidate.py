@@ -142,29 +142,15 @@ def load_mapping_dates(cache_path: Path) -> dict[str, str]:
         cache_path: Path to the cache TSV (see :func:`write_cache`).
 
     Returns:
-        Dict mapping each ``record_id`` to its best available ISO date
-        string: the mapping's own per-row ``mapping_date`` when the parser
-        produced one, else the first-seen release date. Records with no date
-        at all are omitted, leaving their ``mapping_date`` unset rather than
-        passing through a non-date value.
+        Dict mapping each ``record_id`` to the mapping's ``mapping_date``,
+        else the first-seen release date.
     """
     records = read_cache(cache_path)
     return {rid: date for rid, fields in records.items() if (date := _best_date(fields))}
 
 
 def _mapping_fields_json(m: Any) -> str:
-    """JSON-encode a mapping's own fields (excluding record_id).
-
-    Snapshots a mapping's current shape (subject_id, object_id,
-    predicate_id, mapping_date, ...) so :func:`build_consolidated_mapping_set`
-    can rebuild it into a real SSSOM mapping set later. The parser's own
-    per-row ``mapping_date`` is kept (it's release-independent), distinct
-    from the first-seen release version. ``default=str`` handles
-    enum-valued fields like ``mapping_cardinality``, which round-trip
-    cleanly back through ``Mapping(**fields)``. Returns ``"{}"`` for
-    non-dataclass stand-ins (e.g. test doubles); callers skip those rows
-    rather than materializing them.
-    """
+    """JSON-encode a mapping's own fields (excluding record_id)."""
     from dataclasses import fields as dataclass_fields
     from dataclasses import is_dataclass
 
@@ -192,16 +178,6 @@ def consolidate(
     """Build the first-seen-date index for a datasource, collecting all provenance.
 
     Keeps every mapping and every available piece of provenance.
-
-    - **``list_versions`` provided** (versioned archive, e.g. ChEBI/HGNC/
-      UniProt/Ensembl): walk every release oldest-first, calling
-      ``run_one_version(v)`` per release and recording the first/last release
-      each mapping was seen in. Resumes from :func:`read_meta` unless
-      *force*. This collects the full historical set.
-    - **``list_versions`` is ``None``** (no versioned archive, e.g. NCBI/
-      VGNC): a single current parse via ``run_one_version(None)`` caching the
-      *full* mapping set — every mapping kept, stamped with its own per-row
-      date when present and left undated otherwise.
 
     Args:
         cache_path: Path to the cache TSV to read/write.
@@ -257,8 +233,7 @@ def _consolidate_single_parse(
         pair_key = str(getattr(m, "record_id", None) or "")[-16:]
         if not pair_key:
             continue
-        # The mapping's own per-row date survives in fields_json; first_seen_date
-        # mirrors it so undated rows simply stay undated rather than dropping out.
+        # The mapping's own per-row date is taken from fields_json
         date_str = str(m.mapping_date) if getattr(m, "mapping_date", None) else ""
         records[pair_key] = {
             "first_seen_version": version_label,

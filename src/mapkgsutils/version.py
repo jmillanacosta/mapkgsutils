@@ -12,7 +12,7 @@ __all__ = [
     "get_version",
 ]
 
-VERSION = "0.1.2"
+VERSION = "0.2.0"
 
 
 def get_git_hash() -> str:
@@ -24,7 +24,7 @@ def get_git_hash() -> str:
                 cwd=os.path.dirname(__file__),
                 stderr=devnull,
             )
-        except CalledProcessError:
+        except (CalledProcessError, FileNotFoundError):
             return "UNHASHED"
         else:
             return ret.strip().decode("utf-8")[:8]

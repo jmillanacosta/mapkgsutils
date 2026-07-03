@@ -68,6 +68,7 @@ def _is_cloudflare_blocked(response: httpx.Response) -> bool:
         # header being present, check the body.
         content_type = response.headers.get("content-type", "")
         if "text/html" in content_type:
+            response.read()  # body is unread on a streamed response; .text needs it
             text = response.text
             if "cloudflare" in text.lower() or "cf-ray" in text.lower():
                 return True
@@ -558,8 +559,7 @@ def download_datasource_with_release(
         keys: Optional list of file-key names to download.
         tar_extractors: ``{datasource_name: extractor}`` registry for
             datasources that publish a ``.tar.gz`` archive needing
-            member-level extraction rather than a plain download (e.g.
-            UniProt). Datasources without one are downloaded as-is.
+            member-level extraction.
         **kwargs: Datasource-specific knobs forwarded to the resolved hook.
 
     Returns:
