@@ -26,6 +26,7 @@ from mapkgsutils.parsers.config import (
 from mapkgsutils.parsers.config import _cmp_versions as _cmp_versions  # re-export for consolidate
 
 if TYPE_CHECKING:
+    import polars as pl
     import rdflib
     from sssom import sssom_document
 
@@ -642,86 +643,99 @@ class AmbiguousMappingSet(BaseMappingSet):
         raise ValueError(f"Unknown format {fmt!r}. Choose from: json, owl, rdf, sssom")
 
 
-def _build_annotated_mapping(m: Mapping, new_comment: str) -> Mapping:
-    """Return a copy of *m* with *new_comment* set as the ``comment`` field."""
+_AMBIGUOUS_PREFIX = "Ambiguous:"
+_ORIGINAL_MARKER = " Original comment: "
+
+
+def _mapping_conflicts(
+    m: Mapping,
+    mode: str,
+    primary_ids: set[str],
+    primary_labels: dict[str, set[str]],
+) -> tuple[list[str], set[str], set[str]]:
+    """Return ``(conflicts, ambiguous_ids, ambiguous_labels)`` for one mapping.
+
+    In ``"id"`` mode a conflict arises when the mapping's ``subject_id`` is
+    itself a current primary ID. In ``"label"`` mode a conflict arises when the
+    ``subject_label`` is a current primary label of some object other than this
+    mapping's own ``object_id``.
+    """
+    subj_id = str(getattr(m, "subject_id", None) or "")
+    subj_label = str(getattr(m, "subject_label", None) or "")
+    obj_id = str(getattr(m, "object_id", None) or "")
+    conflicts: list[str] = []
+    amb_ids: set[str] = set()
+    amb_labels: set[str] = set()
+
+    if mode == "id":
+        if subj_id and subj_id in primary_ids:
+            amb_ids.add(subj_id)
+            conflicts.append(
+                f"secondary '{subj_id}' is also a current primary ID"
+                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
+            )
+    else:
+        ids_for_label = primary_labels.get(subj_label) if subj_label else None
+        conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
+        if conflicting_ids:
+            amb_labels.add(subj_label)
+            conflict_list = ", ".join(sorted(conflicting_ids))
+            conflicts.append(
+                f"subject_label '{subj_label}' is also the primary label of {conflict_list}"
+                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
+            )
+
+    return conflicts, amb_ids, amb_labels
+
+
+def _with_conflict_comment(m: Mapping, conflicts: list[str]) -> Mapping:
+    """Return a copy of *m* with ambiguous ``comment`` records."""
+    existing = str(getattr(m, "comment", None) or "")
+    if existing.startswith(_AMBIGUOUS_PREFIX):
+        original = existing.split(_ORIGINAL_MARKER, 1)[1] if _ORIGINAL_MARKER in existing else ""
+    else:
+        original = existing
+
+    detail = "; ".join(conflicts)
+    comment = f"{_AMBIGUOUS_PREFIX} {detail}." + (
+        f"{_ORIGINAL_MARKER}{original}" if original else ""
+    )
+
     m_fields = {
         k: getattr(m, k, None)
         for k in (f.name for f in dataclass_fields(m))
         if getattr(m, k, None) is not None
     }
-    m_fields["comment"] = new_comment
+    m_fields["comment"] = comment
     return Mapping(**m_fields)
 
 
-def _annotate_id_mappings(
+def _resolve_primary_sets(
     mappings: list[Mapping],
-    primaries: set[str] | None = None,
-) -> list[Mapping]:
-    """Annotate ambiguous id mappings (subject_id is also an active primary ID)."""
-    if not primaries:
-        object_ids: set[str] = {str(getattr(m, "object_id", None) or "") for m in mappings} - {""}
-    else:
-        object_ids = primaries
+    primary_ids: set[str] | None,
+    primary_labels: dict[str, set[str]] | None,
+    mode: str,
+) -> tuple[set[str], dict[str, set[str]]]:
+    """Return the ``(primary_ids, primary_labels)`` to check *mappings* against.
 
-    result: list[Mapping] = []
-    for m in mappings:
-        subj_id = str(getattr(m, "subject_id", None) or "")
-        obj_id = str(getattr(m, "object_id", None) or "")
-        if subj_id and subj_id in object_ids:
-            existing = str(getattr(m, "comment", None) or "")
-            if existing.startswith("Ambiguous mapping:"):
-                result.append(m)
-                continue
-            new_comment = (
-                f"Ambiguous mapping: secondary '{subj_id}' is also a current primary ID"
-                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                + "."
-                + (f" {existing}" if existing else "")
-            )
-            result.append(_build_annotated_mapping(m, new_comment))
-        else:
-            result.append(m)
-    return result
+    Explicit sets are used when supplied; otherwise they are derived from the
+    ``object_id``/``object_label`` fields of the mappings themselves.
+    """
+    if mode == "id":
+        if primary_ids:
+            return primary_ids, {}
+        ids = {str(getattr(m, "object_id", None) or "") for m in mappings} - {""}
+        return ids, {}
 
-
-def _annotate_label_mappings(
-    mappings: list[Mapping],
-    primary_labels: dict[str, set[str]] | None = None,
-) -> list[Mapping]:
-    """Annotate ambiguous label mappings."""
     if primary_labels:
-        label_to_obj_ids = primary_labels
-    else:
-        label_to_obj_ids = {}
-        for m in mappings:
-            lbl = str(getattr(m, "object_label", None) or "")
-            oid = str(getattr(m, "object_id", None) or "")
-            if lbl and oid:
-                label_to_obj_ids.setdefault(lbl, set()).add(oid)
-
-    result: list[Mapping] = []
+        return set(), primary_labels
+    labels: dict[str, set[str]] = {}
     for m in mappings:
-        subj_label = str(getattr(m, "subject_label", None) or "")
-        obj_id = str(getattr(m, "object_id", None) or "")
-        ids_for_label = label_to_obj_ids.get(subj_label) if subj_label else None
-        conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
-        if conflicting_ids:
-            existing = str(getattr(m, "comment", None) or "")
-            if existing.startswith("Ambiguous mapping:"):
-                result.append(m)
-                continue
-            conflict_list = ", ".join(sorted(conflicting_ids))
-            new_comment = (
-                f"Ambiguous mapping: subject_label '{subj_label}' is also the"
-                f" label of {conflict_list}"
-                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                + "."
-                + (f" Original comment: {existing}" if existing else "")
-            )
-            result.append(_build_annotated_mapping(m, new_comment))
-        else:
-            result.append(m)
-    return result
+        lbl = str(getattr(m, "object_label", None) or "")
+        oid = str(getattr(m, "object_id", None) or "")
+        if lbl and oid:
+            labels.setdefault(lbl, set()).add(oid)
+    return set(), labels
 
 
 def _annotate_ambiguous_mappings(
@@ -732,14 +746,9 @@ def _annotate_ambiguous_mappings(
 ) -> list[Mapping]:
     """Return a new list where ambiguous mappings carry an explanatory comment.
 
-    For **id** mappings a mapping is ambiguous when its ``subject_id`` also
-    appears as an ``object_id`` in the list (the secondary ID is also a live
-    primary ID).
-
-    For **label** mappings a mapping is ambiguous when its ``subject_label``
-    appears as a primary label for a *different* entity, determined by
-    checking whether the same label text is paired with a different
-    ``object_id`` elsewhere in the list.
+    For **id** mappings a mapping is ambiguous when its ``subject_id`` is also a
+    current primary ID. For **label** mappings a mapping is ambiguous when its
+    ``subject_label`` is the primary label of a different object.
 
     This function is called automatically by
     :meth:`BaseParser.create_mapping_set` so that every output format
@@ -748,19 +757,25 @@ def _annotate_ambiguous_mappings(
 
     Args:
         mappings: The raw list of :class:`~sssom_schema.Mapping` objects.
+        primary_labels: Full label-to-primary-IDs index, else derived from
+            *mappings*.
+        primary_ids: Full primary-ID set, else derived from *mappings*.
         mapping_type: ``"id"`` or ``"label"``; controls which fields are
             examined for ambiguity.
 
     Returns:
-        A new list where ambiguous entries have a ``comment`` prepended;
+        A new list where ambiguous entries carry an ambiguity ``comment``;
         non-ambiguous entries are returned unchanged (same object).
     """
     if not mappings:
         return mappings
 
-    if mapping_type == "id":
-        return _annotate_id_mappings(mappings, primary_ids)
-    return _annotate_label_mappings(mappings, primary_labels)
+    ids, labels = _resolve_primary_sets(mappings, primary_ids, primary_labels, mapping_type)
+    result: list[Mapping] = []
+    for m in mappings:
+        conflicts, _, _ = _mapping_conflicts(m, mapping_type, ids, labels)
+        result.append(_with_conflict_comment(m, conflicts) if conflicts else m)
+    return result
 
 
 def _get_primary_sets(
@@ -794,83 +809,6 @@ def _get_primary_sets(
     return stored_ids, stored_labels
 
 
-def _extract_fields_ambig(m: Mapping) -> tuple[str, str, str, str, str, str]:
-    return (
-        str(getattr(m, "subject_id", None) or ""),
-        str(getattr(m, "subject_label", None) or ""),
-        str(getattr(m, "object_id", None) or ""),
-        str(getattr(m, "object_label", None) or ""),
-        str(getattr(m, "predicate_id", None) or ""),
-        str(getattr(m, "comment", None) or ""),
-    )
-
-
-def _build_conflicts(
-    subj_id: str | None,
-    subj_label: str,
-    obj_id: str,
-    obj_label: str,
-    pred: str,
-    primary_ids: set[str],
-    primary_labels: dict[str, set[str]],
-    mode: str,
-) -> tuple[list[str], set[str], set[str]]:
-    """Return ``(conflicts, ambiguous_ids, ambiguous_labels)`` for one mapping.
-
-    For **id** mode a conflict is raised when ``subj_id`` is present in
-    ``primary_ids``.
-
-    For labels a conflict is raised only when ``subj_label`` maps to a
-    primary ID *other* than ``obj_id`` in ``primary_labels``.
-    """
-    conflicts = []
-    amb_ids: set[str] = set()
-    amb_labels: set[str] = set()
-    if mode == "id":
-        if subj_id and subj_id in primary_ids:
-            amb_ids.add(subj_id)
-            conflicts.append(
-                f"secondary '{subj_id}' is also a current primary ID"
-                + (f" (mapping points to '{obj_id}')" if obj_id else "")
-            )
-    if mode == "label":
-        if subj_label in primary_labels:
-            ids_for_label = primary_labels.get(subj_label) if subj_label else None
-            conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
-            if conflicting_ids:
-                amb_labels.add(subj_label)
-                conflict_list = ", ".join(sorted(conflicting_ids))
-                conflicts.append(
-                    f"subject_label '{subj_label}' is also the primary label of {conflict_list}"
-                    + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                )
-    return conflicts, amb_ids, amb_labels
-
-
-def _make_annotated_mapping(m: Mapping, conflicts: list[str], existing_raw: str) -> Mapping:
-    if existing_raw.startswith("Ambiguous mapping:"):
-        # Already wrapped by _annotate_id_mappings/_annotate_label_mappings;
-        # unwrap to the truly original comment to avoid nested wrapping.
-        marker = " Original comment: "
-        original = existing_raw.split(marker, 1)[1] if marker in existing_raw else ""
-    else:
-        original = existing_raw
-
-    conflict_detail = "; ".join(conflicts)
-
-    new_comment = f"Ambiguous: {conflict_detail}." + (
-        f" Original comment: {original}" if original else ""
-    )
-
-    m_fields = {
-        k: getattr(m, k, None)
-        for k in (f.name for f in dataclass_fields(m))
-        if getattr(m, k, None) is not None
-    }
-    m_fields["comment"] = new_comment
-    return Mapping(**m_fields)
-
-
 def _find_ambiguous(mapping_set: BaseMappingSet) -> AmbiguousMappingSet:
     """Identify mappings whose subject is also a current primary entry.
 
@@ -885,52 +823,26 @@ def _find_ambiguous(mapping_set: BaseMappingSet) -> AmbiguousMappingSet:
         found.
     """
     mode = mapping_set._ambiguity_mode
-    get_subj = "subject_id" if mode == "id" else "object_id"
     mappings = list(mapping_set.mappings or [])
     primary_ids, primary_labels = _get_primary_sets(mapping_set, mappings)
 
     ambiguous_mappings = []
-    ambiguous_ids = set()
-    ambiguous_labels = set()
+    ambiguous_ids: set[str] = set()
+    ambiguous_labels: set[str] = set()
+    replacements: dict[int, Mapping] = {}
 
     for m in mappings:
-        subj_id, subj_label, obj_id, obj_label, pred, raw_comment = _extract_fields_ambig(m)
-        conflicts, ids, labels = _build_conflicts(
-            subj_id, subj_label, obj_id, obj_label, pred, primary_ids, primary_labels, mode
-        )
-
+        conflicts, ids, labels = _mapping_conflicts(m, mode, primary_ids, primary_labels)
         ambiguous_ids |= ids
         ambiguous_labels |= labels
         if not conflicts:
             continue
+        annotated = _with_conflict_comment(m, conflicts)
+        ambiguous_mappings.append(annotated)
+        replacements[id(m)] = annotated
 
-        ambiguous_mappings.append(_make_annotated_mapping(m, conflicts, raw_comment))
-
-    if ambiguous_mappings:
-        annotated_by_subj = {
-            str(getattr(am, "subject_id", None) or ""): am for am in ambiguous_mappings
-        }
-        annotated_by_label = {
-            str(getattr(am, "subject_label", None) or ""): am for am in ambiguous_mappings
-        }
-
-        updated_source = []
-        changed = False
-
-        for m in mappings:
-            subj_id = str(getattr(m, get_subj, None) or "")
-            subj_label = str(getattr(m, "subject_label", None) or "")
-
-            replacement = annotated_by_subj.get(subj_id) or annotated_by_label.get(subj_label)
-
-            if replacement is not None and replacement is not m:
-                updated_source.append(replacement)
-                changed = True
-            else:
-                updated_source.append(m)
-
-        if changed:
-            mapping_set.mappings = updated_source
+    if replacements:
+        mapping_set.mappings = [replacements.get(id(m), m) for m in mappings]
 
     kwargs = {}
     for attr in (
@@ -1259,6 +1171,39 @@ class BaseParser(ABC):
         if label_type is not None and "predicate_id" not in row:
             row.update(self._label_predicate_for_type(label_type))
         return row
+
+    def _read_tsv(self, file_path: Path) -> pl.DataFrame:
+        """Read a tab-separated flat file into a Polars DataFrame.
+
+        Args:
+            file_path: Path to the TSV file.
+
+        Returns:
+            The parsed :class:`polars.DataFrame`.
+        """
+        import polars as pl
+
+        return pl.read_csv(
+            file_path,
+            separator="\t",
+            infer_schema_length=10000,
+            null_values=[""],
+        )
+
+    def _fixed_mapping_fields(self) -> dict[str, Any]:
+        """Return the provenance fields shared by every mapping of one parse.
+
+        Selects the mapping-level fields from the parser's config metadata
+        for use as ``fixed_fields`` in :meth:`_build_mappings`.
+        """
+        m_meta = self.get_mapping_metadata()
+        return {
+            "mapping_justification": m_meta["mapping_justification"],
+            "subject_source": m_meta.get("subject_source"),
+            "object_source": m_meta.get("object_source"),
+            "mapping_tool": m_meta.get("mapping_tool"),
+            "license": m_meta.get("license"),
+        }
 
     def _build_mappings(
         self,

@@ -462,6 +462,7 @@ def _build_context_specs(
     return specs
 
 
+# docstr-coverage:excused `overload`
 @overload
 def resolve(
     values: str,
@@ -475,6 +476,7 @@ def resolve(
 ) -> dict[str, str]: ...
 
 
+# docstr-coverage:excused `overload`
 @overload
 def resolve(
     values: list[str],
@@ -488,6 +490,7 @@ def resolve(
 ) -> dict[str, str]: ...
 
 
+# docstr-coverage:excused `overload`
 @overload
 def resolve(
     values: pd.DataFrame,
@@ -527,14 +530,14 @@ def resolve(
     report_path: Path | str | None = None,
     context: ContextSpec | list[ContextSpec] | None = None,
 ) -> dict[str, str] | pd.DataFrame:
-    """Resolve *values* through *mapping_set* over *on* (``"id"`` or ``"label"``).
+    """Resolve values through mapping_set over *on* (``"id"`` or ``"label"``).
 
     *values* is a delimited string, a list of such strings, or a DataFrame (with
     *at* naming the column(s) to resolve). Unknown tokens are kept; ambiguous
     tokens are blanked unless *synonyms*, *xref*, or *context* evidence resolves
     them, in which case a companion ``<col><suffix>_id`` column is added.
 
-    *relation_predicates* name the edges carrying the relation under resolution;
+    *relation_predicates* name the edges with the relation under resolution;
     they are excluded from the alias index built for hint resolution. For
     ``on="id"`` that index comes from *alias_mapping_set*; for ``on="label"`` it
     comes from *mapping_set*.
