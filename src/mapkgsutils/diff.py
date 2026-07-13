@@ -170,7 +170,7 @@ def _read_sssom_to_dataframe(path: Path) -> pl.DataFrame:
     """
     # Count header lines
     header_lines = 0
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         for line in f:
             if line.startswith("#"):
                 header_lines += 1
@@ -200,7 +200,7 @@ def _extract_sssom_version(path: Path) -> str | None:
     Returns:
         Version string or None if not found.
     """
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         for line in f:
             if not line.startswith("#"):
                 break

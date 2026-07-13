@@ -6,10 +6,8 @@ import hashlib
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from datetime import date, datetime
-from importlib import resources as _importlib_resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
@@ -18,8 +16,17 @@ from sssom_schema import Mapping, MappingCardinalityEnum, MappingSet
 from tqdm import tqdm
 
 from mapkgsutils.logging import logger
+from mapkgsutils.parsers.config import (
+    DatasourceConfig,
+    DistributionEra,
+    XrefSource,
+    get_datasource_config,
+    load_config,
+)
+from mapkgsutils.parsers.config import _cmp_versions as _cmp_versions  # re-export for consolidate
 
 if TYPE_CHECKING:
+    import polars as pl
     import rdflib
     from sssom import sssom_document
 
@@ -29,278 +36,6 @@ _T = TypeVar("_T")
 
 WITHDRAWN_ENTRY = "sssom:NoTermFound"
 WITHDRAWN_ENTRY_LABEL = "Withdrawn Entry"
-
-
-@dataclass
-class DistributionEra:
-    """One historical "shape" a datasource's distribution has taken.
-
-    Lets a config describe multiple eras (different URL templates, formats,
-    or archive locations) instead of a single hardcoded threshold. Eras are
-    matched by version using from_version/to_version (inclusive, numeric-aware
-    comparison so "100" < "245" compares correctly; falls back to lexicographic
-    for date-string versions like HGNC's "YYYY-MM-DD").
-    """
-
-    id: str
-    download_urls: dict[str, str] = field(default_factory=dict)
-    archive_url: str = ""
-    format: str | None = None
-    from_version: str | None = None
-    to_version: str | None = None
-    wayback: bool = False  # declarative only for now, no resolver yet
-
-
-@dataclass
-class XrefSource:
-    """A suggested cross-reference crosswalk source for a datasource.
-
-    Passed to :func:`mapkgsutils.context.load_xref_mapping` after downloading
-    *url* and renaming *object_id_col*/*object_label_col*/the chosen
-    *subject_id_cols* entry to ``object_id``/``object_label``/``subject_id``.
-    """
-
-    id: str
-    name: str = ""
-    url: str = ""
-    format: str = "tsv"
-    object_id_col: str = "object_id"
-    object_label_col: str = "object_label"
-    subject_id_cols: dict[str, str] = field(default_factory=dict)
-    note: str = ""
-
-
-def _cmp_versions(a: str, b: str) -> int:
-    """Compare two version strings, numerically when possible.
-
-    Falls back to plain string comparison for non-numeric versions (e.g.
-    ISO date strings like ``"2026-04-07"``, which already sort correctly
-    lexicographically).
-
-    Returns:
-        Negative if ``a < b``, zero if equal, positive if ``a > b``.
-    """
-    try:
-        ai, bi = int(a), int(b)
-        return (ai > bi) - (ai < bi)
-    except ValueError:
-        return (a > b) - (a < b)
-
-
-@dataclass
-class DatasourceConfig:
-    """Configuration for a biological database datasource loaded from YAML."""
-
-    name: str
-    prefix: str
-    curie_base_url: str
-    # Proper schema fields
-    config_id: str = ""
-    datasource_id: str = ""
-    parser_class: str = ""
-    parse_options: dict[str, Any] = field(default_factory=dict)
-    mapping_sets: dict[str, Any] = field(default_factory=dict)
-    # Old field, remove at some point
-    available_outputs: list[str] = field(default_factory=list)
-    default_output_filename: str = ""
-    download_urls: dict[str, Any] = field(default_factory=dict)
-    primary_file_key: str = ""
-    id_pattern: str = ""
-    archive_url: str = ""
-    input_file_types: list[str] = field(default_factory=list)
-    source: str = ""
-    homepage: str = ""
-    data_license: str = ""
-    # SPARQL-based datasources (e.g., Wikidata)
-    sparql_endpoint: str = ""
-    queries: dict[str, str] = field(default_factory=dict)
-    # For now, only ChEBI: version threshold for new TSV format.
-    # Use if release files change location or serialization.
-    new_format_version: int | None = None
-    # Historical distribution "shapes" this datasource has had (different URL
-    # templates, formats, or archive locations across its lifetime).
-    distribution_eras: list[DistributionEra] = field(default_factory=list)
-    # Suggested cross-reference crosswalk sources
-    xref_sources: list[XrefSource] = field(default_factory=list)
-    # Species this datasource publishes
-    species: dict[str, Any] = field(default_factory=dict)
-    # Compound/entry subset this datasource publishes (e.g. ChEBI's
-    # 3star/complete). Generic, config-driven counterpart to `species`.
-    subset: dict[str, Any] = field(default_factory=dict)
-    # Full metadata from YAML
-    mappingset_metadata: dict[str, Any] = field(default_factory=dict)
-    mapping_metadata: dict[str, Any] = field(default_factory=dict)
-
-    def species_token(self, taxon_id: str | int) -> str:
-        """Resolve a canonical NCBI taxon ID to this datasource's own species token.
-
-        Reads the ``species.available`` block (see ``ensembl.yaml``), which
-        maps each supported taxon ID to the datasource-specific token used to
-        build download paths/filters (e.g. Ensembl's ``homo_sapiens``).
-
-        Args:
-            taxon_id: Canonical NCBI taxon ID, e.g. ``9606`` or ``"9606"``.
-
-        Returns:
-            The datasource-specific species token.
-
-        Raises:
-            ValueError: If no ``species`` block is configured, or *taxon_id*
-                is not one of its declared entries.
-        """
-        available = {str(k): v for k, v in ((self.species or {}).get("available") or {}).items()}
-        entry = available.get(str(taxon_id))
-        if entry is None:
-            known = ", ".join(sorted(available)) or "(none configured)"
-            raise ValueError(
-                f"Unknown species taxon ID {taxon_id!r} for {self.name!r}. Known: {known}"
-            )
-        return str(entry["token"])
-
-    def default_species(self) -> str | int:
-        """Return the configured default species taxon ID (``9606`` if unset)."""
-        return cast("str | int", (self.species or {}).get("default", 9606))
-
-    def default_subset(self) -> str | None:
-        """Return the configured default subset, or ``None`` if this datasource has none."""
-        return cast("str | None", (self.subset or {}).get("default"))
-
-    def xref_source(self, source_id: str) -> XrefSource | None:
-        """Return the configured :class:`XrefSource` with id *source_id*, if any."""
-        for src in self.xref_sources:
-            if src.id == source_id:
-                return src
-        return None
-
-    def formats_for(self, kind: str) -> Any:
-        """Return the list of supported output formats for a mapping-set kind.
-
-        Args:
-            kind: Mapping-set key, e.g. ``"ids"`` or ``"labels"``.
-
-        Returns:
-            List of format strings, or an empty list when the kind is absent.
-        """
-        return self.mapping_sets.get(kind, {}).get("formats", [])
-
-    def era_for(self, version: str | None) -> DistributionEra | None:
-        """Return the first configured era whose bounds contain *version*.
-
-        Args:
-            version: Version string to match, or ``None``.
-
-        Returns:
-            The matching :class:`DistributionEra`, or ``None`` if no eras are
-            configured or none match (callers should fall back to the
-            top-level ``download_urls``/``new_format_version`` behavior).
-        """
-        if not self.distribution_eras or version is None:
-            return None
-        for era in self.distribution_eras:
-            if era.from_version is not None and _cmp_versions(version, era.from_version) < 0:
-                continue
-            if era.to_version is not None and _cmp_versions(version, era.to_version) > 0:
-                continue
-            return era
-        return None
-
-
-def load_config(datasource_name: str, *, config_package: str) -> dict[str, Any]:
-    """Load configuration from a YAML file for a datasource.
-
-    Args:
-        datasource_name: Name of the datasource (e.g., 'chebi', 'hgnc').
-        config_package: Importable package holding the datasource's
-            ``*.yaml`` config files (e.g. ``"pysec2pri.config"``).
-
-    Returns:
-        Dictionary with the full YAML configuration.
-
-    Raises:
-        FileNotFoundError: If the config file does not exist.
-    """
-    from mapkgsutils.config.schema import validate_config_dict
-
-    config_dir = Path(_importlib_resources.files(config_package))  # type: ignore[arg-type]
-    config_path = config_dir / f"{datasource_name.lower()}.yaml"
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with config_path.open("r", encoding="utf-8") as f:
-        result: dict[str, Any] = yaml.safe_load(f)
-    validate_config_dict(result, config_path.name)
-    return result
-
-
-def get_datasource_config(datasource_name: str, *, config_package: str) -> DatasourceConfig:
-    """Load and parse a DatasourceConfig from YAML.
-
-    Args:
-        datasource_name: Name of the datasource (e.g., 'chebi', 'hgnc').
-        config_package: Importable package holding the datasource's
-            ``*.yaml`` config files (e.g. ``"pysec2pri.config"``).
-
-    Returns:
-        DatasourceConfig object populated from YAML.
-    """
-    raw = load_config(datasource_name, config_package=config_package)
-
-    eras = [
-        DistributionEra(
-            id=era.get("id", ""),
-            download_urls=era.get("download_urls") or {},
-            archive_url=era.get("archive_url", ""),
-            format=era.get("format"),
-            from_version=era.get("from_version"),
-            to_version=era.get("to_version"),
-            wayback=era.get("wayback", False),
-        )
-        for era in raw.get("distribution_eras", [])
-    ]
-
-    xref_sources = [
-        XrefSource(
-            id=src.get("id", ""),
-            name=src.get("name", ""),
-            url=src.get("url", ""),
-            format=src.get("format", "tsv"),
-            object_id_col=src.get("object_id_col", "object_id"),
-            object_label_col=src.get("object_label_col", "object_label"),
-            subject_id_cols=src.get("subject_id_cols") or {},
-            note=src.get("note", ""),
-        )
-        for src in raw.get("xref_sources", [])
-    ]
-
-    return DatasourceConfig(
-        name=raw.get("name", ""),
-        prefix=raw.get("prefix", ""),
-        curie_base_url=raw.get("curie_base_url", ""),
-        config_id=raw.get("config_id", ""),
-        datasource_id=raw.get("datasource_id", ""),
-        parser_class=raw.get("parser_class", ""),
-        parse_options=raw.get("parse_options") or {},
-        mapping_sets=raw.get("mapping_sets") or {},
-        available_outputs=raw.get("available_outputs", []),
-        default_output_filename=raw.get("default_output_filename", ""),
-        download_urls=raw.get("download_urls", {}),
-        primary_file_key=raw.get("primary_file_key", ""),
-        id_pattern=raw.get("id_pattern", ""),
-        archive_url=raw.get("archive_url", ""),
-        input_file_types=raw.get("input_file_types", []),
-        source=raw.get("source", ""),
-        homepage=raw.get("homepage", ""),
-        data_license=raw.get("data_license", ""),
-        sparql_endpoint=raw.get("sparql_endpoint", ""),
-        queries=raw.get("queries", {}),
-        new_format_version=raw.get("new_format_version"),
-        distribution_eras=eras,
-        xref_sources=xref_sources,
-        species=raw.get("species") or {},
-        subset=raw.get("subset") or {},
-        mappingset_metadata=raw.get("mappingset", {}),
-        mapping_metadata=raw.get("mapping", {}),
-    )
 
 
 # Base Downloader Class
@@ -562,7 +297,7 @@ class BaseMappingSet(MappingSet):  # type: ignore[misc]
 
     def _default_stem(self) -> str:
         """Derive a base filename stem from mapping set metadata."""
-        ms_id: str = str(getattr(self, "mapping_set_id", None) or "") + f"/{self.version}"
+        ms_id: str = str(getattr(self, "mapping_set_id", None) or "")
         if ms_id:
             stem = ms_id.rstrip("/").rsplit("/", 1)[-1]
         else:
@@ -874,12 +609,7 @@ class AmbiguousMappingSet(BaseMappingSet):
 
     An entry is ambiguous when the same string appears both as a current
     primary identifier/label (in the datasource's full primary set) and
-    as a secondary identifier/label in the mapping set (i.e. it is also
-    recorded as a previous or alias term that *maps to something else*).
-
-    Because the directionality of the mapping is unclear for such entries,
-    the resolver leaves them blank and warns the user rather than silently
-    overwriting data.
+    as a secondary identifier/label in the mapping set.
 
     Attributes:
         ambiguous_ids: Set of ID strings that are ambiguous.
@@ -913,86 +643,99 @@ class AmbiguousMappingSet(BaseMappingSet):
         raise ValueError(f"Unknown format {fmt!r}. Choose from: json, owl, rdf, sssom")
 
 
-def _build_annotated_mapping(m: Mapping, new_comment: str) -> Mapping:
-    """Return a copy of *m* with *new_comment* set as the ``comment`` field."""
+_AMBIGUOUS_PREFIX = "Ambiguous:"
+_ORIGINAL_MARKER = " Original comment: "
+
+
+def _mapping_conflicts(
+    m: Mapping,
+    mode: str,
+    primary_ids: set[str],
+    primary_labels: dict[str, set[str]],
+) -> tuple[list[str], set[str], set[str]]:
+    """Return ``(conflicts, ambiguous_ids, ambiguous_labels)`` for one mapping.
+
+    In ``"id"`` mode a conflict arises when the mapping's ``subject_id`` is
+    itself a current primary ID. In ``"label"`` mode a conflict arises when the
+    ``subject_label`` is a current primary label of some object other than this
+    mapping's own ``object_id``.
+    """
+    subj_id = str(getattr(m, "subject_id", None) or "")
+    subj_label = str(getattr(m, "subject_label", None) or "")
+    obj_id = str(getattr(m, "object_id", None) or "")
+    conflicts: list[str] = []
+    amb_ids: set[str] = set()
+    amb_labels: set[str] = set()
+
+    if mode == "id":
+        if subj_id and subj_id in primary_ids:
+            amb_ids.add(subj_id)
+            conflicts.append(
+                f"secondary '{subj_id}' is also a current primary ID"
+                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
+            )
+    else:
+        ids_for_label = primary_labels.get(subj_label) if subj_label else None
+        conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
+        if conflicting_ids:
+            amb_labels.add(subj_label)
+            conflict_list = ", ".join(sorted(conflicting_ids))
+            conflicts.append(
+                f"subject_label '{subj_label}' is also the primary label of {conflict_list}"
+                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
+            )
+
+    return conflicts, amb_ids, amb_labels
+
+
+def _with_conflict_comment(m: Mapping, conflicts: list[str]) -> Mapping:
+    """Return a copy of *m* with ambiguous ``comment`` records."""
+    existing = str(getattr(m, "comment", None) or "")
+    if existing.startswith(_AMBIGUOUS_PREFIX):
+        original = existing.split(_ORIGINAL_MARKER, 1)[1] if _ORIGINAL_MARKER in existing else ""
+    else:
+        original = existing
+
+    detail = "; ".join(conflicts)
+    comment = f"{_AMBIGUOUS_PREFIX} {detail}." + (
+        f"{_ORIGINAL_MARKER}{original}" if original else ""
+    )
+
     m_fields = {
         k: getattr(m, k, None)
         for k in (f.name for f in dataclass_fields(m))
         if getattr(m, k, None) is not None
     }
-    m_fields["comment"] = new_comment
+    m_fields["comment"] = comment
     return Mapping(**m_fields)
 
 
-def _annotate_id_mappings(
+def _resolve_primary_sets(
     mappings: list[Mapping],
-    primaries: set[str] | None = None,
-) -> list[Mapping]:
-    """Annotate ambiguous id mappings (subject_id is also an active primary ID)."""
-    if not primaries:
-        object_ids: set[str] = {str(getattr(m, "object_id", None) or "") for m in mappings} - {""}
-    else:
-        object_ids = primaries
+    primary_ids: set[str] | None,
+    primary_labels: dict[str, set[str]] | None,
+    mode: str,
+) -> tuple[set[str], dict[str, set[str]]]:
+    """Return the ``(primary_ids, primary_labels)`` to check *mappings* against.
 
-    result: list[Mapping] = []
-    for m in mappings:
-        subj_id = str(getattr(m, "subject_id", None) or "")
-        obj_id = str(getattr(m, "object_id", None) or "")
-        if subj_id and subj_id in object_ids:
-            existing = str(getattr(m, "comment", None) or "")
-            if existing.startswith("Ambiguous mapping:"):
-                result.append(m)
-                continue
-            new_comment = (
-                f"Ambiguous mapping: secondary '{subj_id}' is also a current primary ID"
-                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                + "."
-                + (f" {existing}" if existing else "")
-            )
-            result.append(_build_annotated_mapping(m, new_comment))
-        else:
-            result.append(m)
-    return result
+    Explicit sets are used when supplied; otherwise they are derived from the
+    ``object_id``/``object_label`` fields of the mappings themselves.
+    """
+    if mode == "id":
+        if primary_ids:
+            return primary_ids, {}
+        ids = {str(getattr(m, "object_id", None) or "") for m in mappings} - {""}
+        return ids, {}
 
-
-def _annotate_label_mappings(
-    mappings: list[Mapping],
-    primary_labels: dict[str, set[str]] | None = None,
-) -> list[Mapping]:
-    """Annotate ambiguous label mappings."""
     if primary_labels:
-        label_to_obj_ids = primary_labels
-    else:
-        label_to_obj_ids = {}
-        for m in mappings:
-            lbl = str(getattr(m, "object_label", None) or "")
-            oid = str(getattr(m, "object_id", None) or "")
-            if lbl and oid:
-                label_to_obj_ids.setdefault(lbl, set()).add(oid)
-
-    result: list[Mapping] = []
+        return set(), primary_labels
+    labels: dict[str, set[str]] = {}
     for m in mappings:
-        subj_label = str(getattr(m, "subject_label", None) or "")
-        obj_id = str(getattr(m, "object_id", None) or "")
-        ids_for_label = label_to_obj_ids.get(subj_label) if subj_label else None
-        conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
-        if conflicting_ids:
-            existing = str(getattr(m, "comment", None) or "")
-            if existing.startswith("Ambiguous mapping:"):
-                result.append(m)
-                continue
-            conflict_list = ", ".join(sorted(conflicting_ids))
-            new_comment = (
-                f"Ambiguous mapping: subject_label '{subj_label}' is also the"
-                f" label of {conflict_list}"
-                + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                + "."
-                + (f" Original comment: {existing}" if existing else "")
-            )
-            result.append(_build_annotated_mapping(m, new_comment))
-        else:
-            result.append(m)
-    return result
+        lbl = str(getattr(m, "object_label", None) or "")
+        oid = str(getattr(m, "object_id", None) or "")
+        if lbl and oid:
+            labels.setdefault(lbl, set()).add(oid)
+    return set(), labels
 
 
 def _annotate_ambiguous_mappings(
@@ -1003,14 +746,9 @@ def _annotate_ambiguous_mappings(
 ) -> list[Mapping]:
     """Return a new list where ambiguous mappings carry an explanatory comment.
 
-    For **id** mappings a mapping is ambiguous when its ``subject_id`` also
-    appears as an ``object_id`` in the list (the secondary ID is also a live
-    primary ID).
-
-    For **label** mappings a mapping is ambiguous when its ``subject_label``
-    appears as a primary label for a *different* entity, determined by
-    checking whether the same label text is paired with a different
-    ``object_id`` elsewhere in the list.
+    For **id** mappings a mapping is ambiguous when its ``subject_id`` is also a
+    current primary ID. For **label** mappings a mapping is ambiguous when its
+    ``subject_label`` is the primary label of a different object.
 
     This function is called automatically by
     :meth:`BaseParser.create_mapping_set` so that every output format
@@ -1019,19 +757,25 @@ def _annotate_ambiguous_mappings(
 
     Args:
         mappings: The raw list of :class:`~sssom_schema.Mapping` objects.
+        primary_labels: Full label-to-primary-IDs index, else derived from
+            *mappings*.
+        primary_ids: Full primary-ID set, else derived from *mappings*.
         mapping_type: ``"id"`` or ``"label"``; controls which fields are
             examined for ambiguity.
 
     Returns:
-        A new list where ambiguous entries have a ``comment`` prepended;
+        A new list where ambiguous entries carry an ambiguity ``comment``;
         non-ambiguous entries are returned unchanged (same object).
     """
     if not mappings:
         return mappings
 
-    if mapping_type == "id":
-        return _annotate_id_mappings(mappings, primary_ids)
-    return _annotate_label_mappings(mappings, primary_labels)
+    ids, labels = _resolve_primary_sets(mappings, primary_ids, primary_labels, mapping_type)
+    result: list[Mapping] = []
+    for m in mappings:
+        conflicts, _, _ = _mapping_conflicts(m, mapping_type, ids, labels)
+        result.append(_with_conflict_comment(m, conflicts) if conflicts else m)
+    return result
 
 
 def _get_primary_sets(
@@ -1065,83 +809,6 @@ def _get_primary_sets(
     return stored_ids, stored_labels
 
 
-def _extract_fields_ambig(m: Mapping) -> tuple[str, str, str, str, str, str]:
-    return (
-        str(getattr(m, "subject_id", None) or ""),
-        str(getattr(m, "subject_label", None) or ""),
-        str(getattr(m, "object_id", None) or ""),
-        str(getattr(m, "object_label", None) or ""),
-        str(getattr(m, "predicate_id", None) or ""),
-        str(getattr(m, "comment", None) or ""),
-    )
-
-
-def _build_conflicts(
-    subj_id: str | None,
-    subj_label: str,
-    obj_id: str,
-    obj_label: str,
-    pred: str,
-    primary_ids: set[str],
-    primary_labels: dict[str, set[str]],
-    mode: str,
-) -> tuple[list[str], set[str], set[str]]:
-    """Return ``(conflicts, ambiguous_ids, ambiguous_labels)`` for one mapping.
-
-    For **id** mode a conflict is raised when ``subj_id`` is present in
-    ``primary_ids``.
-
-    For labels a conflict is raised only when ``subj_label`` maps to a
-    primary ID *other* than ``obj_id`` in ``primary_labels``.
-    """
-    conflicts = []
-    amb_ids: set[str] = set()
-    amb_labels: set[str] = set()
-    if mode == "id":
-        if subj_id and subj_id in primary_ids:
-            amb_ids.add(subj_id)
-            conflicts.append(
-                f"secondary '{subj_id}' is also a current primary ID"
-                + (f" (mapping points to '{obj_id}')" if obj_id else "")
-            )
-    if mode == "label":
-        if subj_label in primary_labels:
-            ids_for_label = primary_labels.get(subj_label) if subj_label else None
-            conflicting_ids = (ids_for_label - {obj_id}) if ids_for_label else set()
-            if conflicting_ids:
-                amb_labels.add(subj_label)
-                conflict_list = ", ".join(sorted(conflicting_ids))
-                conflicts.append(
-                    f"subject_label '{subj_label}' is also the primary label of {conflict_list}"
-                    + (f" (this mapping resolves to '{obj_id}')" if obj_id else "")
-                )
-    return conflicts, amb_ids, amb_labels
-
-
-def _make_annotated_mapping(m: Mapping, conflicts: list[str], existing_raw: str) -> Mapping:
-    if existing_raw.startswith("Ambiguous mapping:"):
-        # Already wrapped by _annotate_id_mappings/_annotate_label_mappings;
-        # unwrap to the truly original comment to avoid nested wrapping.
-        marker = " Original comment: "
-        original = existing_raw.split(marker, 1)[1] if marker in existing_raw else ""
-    else:
-        original = existing_raw
-
-    conflict_detail = "; ".join(conflicts)
-
-    new_comment = f"Ambiguous: {conflict_detail}." + (
-        f" Original comment: {original}" if original else ""
-    )
-
-    m_fields = {
-        k: getattr(m, k, None)
-        for k in (f.name for f in dataclass_fields(m))
-        if getattr(m, k, None) is not None
-    }
-    m_fields["comment"] = new_comment
-    return Mapping(**m_fields)
-
-
 def _find_ambiguous(mapping_set: BaseMappingSet) -> AmbiguousMappingSet:
     """Identify mappings whose subject is also a current primary entry.
 
@@ -1156,52 +823,26 @@ def _find_ambiguous(mapping_set: BaseMappingSet) -> AmbiguousMappingSet:
         found.
     """
     mode = mapping_set._ambiguity_mode
-    get_subj = "subject_id" if mode == "id" else "object_id"
     mappings = list(mapping_set.mappings or [])
     primary_ids, primary_labels = _get_primary_sets(mapping_set, mappings)
 
     ambiguous_mappings = []
-    ambiguous_ids = set()
-    ambiguous_labels = set()
+    ambiguous_ids: set[str] = set()
+    ambiguous_labels: set[str] = set()
+    replacements: dict[int, Mapping] = {}
 
     for m in mappings:
-        subj_id, subj_label, obj_id, obj_label, pred, raw_comment = _extract_fields_ambig(m)
-        conflicts, ids, labels = _build_conflicts(
-            subj_id, subj_label, obj_id, obj_label, pred, primary_ids, primary_labels, mode
-        )
-
+        conflicts, ids, labels = _mapping_conflicts(m, mode, primary_ids, primary_labels)
         ambiguous_ids |= ids
         ambiguous_labels |= labels
         if not conflicts:
             continue
+        annotated = _with_conflict_comment(m, conflicts)
+        ambiguous_mappings.append(annotated)
+        replacements[id(m)] = annotated
 
-        ambiguous_mappings.append(_make_annotated_mapping(m, conflicts, raw_comment))
-
-    if ambiguous_mappings:
-        annotated_by_subj = {
-            str(getattr(am, "subject_id", None) or ""): am for am in ambiguous_mappings
-        }
-        annotated_by_label = {
-            str(getattr(am, "subject_label", None) or ""): am for am in ambiguous_mappings
-        }
-
-        updated_source = []
-        changed = False
-
-        for m in mappings:
-            subj_id = str(getattr(m, get_subj, None) or "")
-            subj_label = str(getattr(m, "subject_label", None) or "")
-
-            replacement = annotated_by_subj.get(subj_id) or annotated_by_label.get(subj_label)
-
-            if replacement is not None and replacement is not m:
-                updated_source.append(replacement)
-                changed = True
-            else:
-                updated_source.append(m)
-
-        if changed:
-            mapping_set.mappings = updated_source
+    if replacements:
+        mapping_set.mappings = [replacements.get(id(m), m) for m in mappings]
 
     kwargs = {}
     for attr in (
@@ -1530,6 +1171,39 @@ class BaseParser(ABC):
         if label_type is not None and "predicate_id" not in row:
             row.update(self._label_predicate_for_type(label_type))
         return row
+
+    def _read_tsv(self, file_path: Path) -> pl.DataFrame:
+        """Read a tab-separated flat file into a Polars DataFrame.
+
+        Args:
+            file_path: Path to the TSV file.
+
+        Returns:
+            The parsed :class:`polars.DataFrame`.
+        """
+        import polars as pl
+
+        return pl.read_csv(
+            file_path,
+            separator="\t",
+            infer_schema_length=10000,
+            null_values=[""],
+        )
+
+    def _fixed_mapping_fields(self) -> dict[str, Any]:
+        """Return the provenance fields shared by every mapping of one parse.
+
+        Selects the mapping-level fields from the parser's config metadata
+        for use as ``fixed_fields`` in :meth:`_build_mappings`.
+        """
+        m_meta = self.get_mapping_metadata()
+        return {
+            "mapping_justification": m_meta["mapping_justification"],
+            "subject_source": m_meta.get("subject_source"),
+            "object_source": m_meta.get("object_source"),
+            "mapping_tool": m_meta.get("mapping_tool"),
+            "license": m_meta.get("license"),
+        }
 
     def _build_mappings(
         self,

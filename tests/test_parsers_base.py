@@ -90,7 +90,7 @@ class TestBaseMappingSet:
         assert "SEC:1" in out.read_text(encoding="utf-8")
 
     def test_save_unknown_format_raises(self, tmp_path: Path) -> None:
-        """An unsupported format name raises rather than silently no-op-ing."""
+        """An unsupported format name raises."""
         ms = BaseMappingSet(
             mapping_set_id="https://example.org/test", license=_LICENSE, mappings=[]
         )

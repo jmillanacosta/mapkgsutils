@@ -1,8 +1,7 @@
-"""Logging configuration for mapkgsutils.
+"""Logging configuration.
 
-This module provides a centralized logger for the package.
-By default, only CRITICAL messages are shown. Use set_log_level()
-to adjust verbosity.
+Provides a configured package logger. Only CRITICAL messages show by default;
+call :func:`set_log_level` to raise verbosity.
 """
 
 from __future__ import annotations
@@ -12,26 +11,10 @@ import sys
 
 __all__ = [
     "LOG_LEVELS",
+    "get_logger",
     "logger",
     "set_log_level",
 ]
-
-# Package logger
-logger = logging.getLogger("mapkgsutils")
-
-# Default to CRITICAL (minimal output)
-logger.setLevel(logging.CRITICAL)
-
-# Add a handler if none exists
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
-    logger.addHandler(handler)
 
 # Map of log level names to logging constants
 LOG_LEVELS: dict[str, int] = {
@@ -44,22 +27,42 @@ LOG_LEVELS: dict[str, int] = {
 }
 
 
-def set_log_level(level: str | int) -> None:
-    """Set the logging level for mapkgsutils.
+def get_logger(name: str) -> logging.Logger:
+    """Return a stderr-handled logger for *name*, defaulting to CRITICAL."""
+    log = logging.getLogger(name)
+    log.setLevel(logging.CRITICAL)
+    if not log.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        log.addHandler(handler)
+    return log
+
+
+logger = get_logger("mapkgsutils")
+
+
+def set_log_level(level: str | int, target: logging.Logger | None = None) -> None:
+    """Set the log level on *target* (the mapkgsutils logger by default).
 
     Args:
-        level: Log level as string ('debug', 'info', 'warning', 'error', 'critical')
-               or as an int (logging.DEBUG, logging.INFO, etc.)
+        level: Level name (``"debug"``/``"info"``/``"warning"``/``"error"``/
+            ``"critical"``) or an integer such as ``logging.INFO``.
+        target: Logger to configure.
 
     Example:
         >>> from mapkgsutils.logging import set_log_level
-        >>> set_log_level("warning")  # Show warnings and above
-        >>> set_log_level("debug")  # Show all messages
+        >>> set_log_level("warning")
     """
+    log = target if target is not None else logger
     if isinstance(level, str):
         level_int = LOG_LEVELS.get(level.lower())
         if level_int is None:
             raise ValueError(f"Unknown log level: {level}. Available: {list(LOG_LEVELS.keys())}")
-        logger.setLevel(level_int)
+        log.setLevel(level_int)
     else:
-        logger.setLevel(level)
+        log.setLevel(level)

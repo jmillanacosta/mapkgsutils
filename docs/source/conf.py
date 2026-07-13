@@ -24,7 +24,7 @@ copyright = f"{date.today().year}, Javier Millan Acosta"
 author = "Javier Millan Acosta"
 
 # The full version, including alpha/beta/rc tags.
-release = "0.1.2"
+release = "0.2.0"
 
 # The short X.Y version.
 parsed_version = re.match(
