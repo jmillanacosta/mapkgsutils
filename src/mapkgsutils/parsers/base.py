@@ -219,8 +219,7 @@ class BaseDownloader(ABC):
 
         Subclasses for datasources that publish versioned archives should
         override this method with source-specific retrieval logic.
-        The base implementation raises :class:`ValueError` because most
-        datasources only provide the latest release.
+        The base implementation raises :class:`ValueError`.
 
         Returns:
             Sorted list of version strings available for download.
@@ -1394,6 +1393,9 @@ class BaseParser(ABC):
         self,
         mappings: list[Mapping],
         mapping_type: str = "id",
+        *,
+        primary_ids: set[str] | None = None,
+        primary_labels: dict[str, set[str]] | None = None,
     ) -> BaseMappingSet:
         """Create a mapping set instance with config metadata.
 
@@ -1406,6 +1408,11 @@ class BaseParser(ABC):
             mapping_type: "id" for cardinality by ID, "label" for
                 cardinality by label; also selects the mapping-set class
                 via :attr:`mapping_set_classes`.
+            primary_ids: Full set of current primary IDs, when the parser has
+                access to the complete-set file. Stored on the result to drive
+                ``to_pri_ids``/ambiguity checks.
+            primary_labels: Full label->primary-IDs map, the label-side
+                counterpart to primary_ids.
 
         Returns:
             MappingSet with computed cardinalities.
@@ -1483,6 +1490,11 @@ class BaseParser(ABC):
         # Compute cardinalities
         mapping_set._compute_cardinalities(on=mapping_type)
 
+        if primary_ids is not None:
+            object.__setattr__(mapping_set, "_primary_ids", primary_ids)
+        if primary_labels is not None:
+            object.__setattr__(mapping_set, "_primary_labels", primary_labels)
+
         return mapping_set
 
     def load(self, path: Path | str, *, mapping_type: str | None = None) -> BaseMappingSet:
@@ -1532,6 +1544,29 @@ class BaseParser(ABC):
         return mapping_set
 
 
+class ProductSlugMixin:
+    """Mixin for datasources whose release splits into disjoint data products.
+
+    Set :attr:`product_attr` to the instance attribute holding the run's
+    selector; its value becomes the :meth:`BaseParser._product_slug` folded
+    into ``mapping_set_id``/``record_id``, so two runs differing only in that
+    option don't collide on either IRI. Mix in ahead of the parser base.
+
+    Example:
+        >>> class SpeciesAwareMixin(ProductSlugMixin):
+        ...     product_attr = "species"
+    """
+
+    #: Instance attribute selecting the data product (e.g. ``"species"``).
+    product_attr: ClassVar[str] = ""
+
+    def _product_slug(self) -> str | None:
+        """Value of :attr:`product_attr` on this run, or ``None`` if unset."""
+        if not self.product_attr:
+            return None
+        return cast("str | None", getattr(self, self.product_attr, None))
+
+
 __all__ = [
     "WITHDRAWN_ENTRY",
     "WITHDRAWN_ENTRY_LABEL",
@@ -1541,6 +1576,7 @@ __all__ = [
     "BaseParser",
     "DatasourceConfig",
     "DistributionEra",
+    "ProductSlugMixin",
     "XrefSource",
     "get_datasource_config",
     "load_config",
