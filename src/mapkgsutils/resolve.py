@@ -121,7 +121,7 @@ def resolve_ambiguous_with_hints(
 
     Returns ``(target_token, target_id)`` when a hint matches the mapping
     target's identity or aliases; ``(ambiguous_token, own_id)`` when a hint
-    matches the token's own aliases; ``("", None)`` otherwise.
+    matches the token aliases; ``("", None)`` otherwise.
 
     Args:
         ambiguous_token: Token that is both a mapping subject and a mapping target.

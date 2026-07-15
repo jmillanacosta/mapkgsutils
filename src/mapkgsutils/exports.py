@@ -126,7 +126,7 @@ def write_sssom(
 
 
 def _to_msdf_via_sssom_parser(mapping_set: BaseMappingSet) -> MappingSetDataFrame | None:
-    """Write to a temporary SSSOM TSV then parse back with sssom's own parser.
+    """Write to a temporary SSSOM TSV then parse back with sssom parser.
 
     Args:
         mapping_set: The mapping set to convert.

@@ -11,7 +11,7 @@ from mapkgsutils.context import XrefRecord, resolve_ambiguous_with_xref
     ("xref_object_id", "xref_object_label", "expected"),
     [
         ("HGNC:3", "Y", ("Y", "HGNC:3")),  # xref points to the secondary's target
-        ("HGNC:1", "X", ("X", "HGNC:1")),  # xref points to the token's own identity
+        ("HGNC:1", "X", ("X", "HGNC:1")),  # xref points to the token identity
         ("HGNC:999", "Q", ("", None)),  # xref points to neither: a third entity
     ],
 )

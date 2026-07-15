@@ -554,7 +554,7 @@ class BaseMappingSet(MappingSet):  # type: ignore[misc]
         pri_is_nf = pl.col("pri") == sentinel
 
         # Withdrawn (sssom:NoTermFound) rows are excluded from the
-        # distinct-counterpart counts, matching sssom's own behavior.
+        # distinct-counterpart counts, matching sssom behavior.
         real = df.filter(~sec_is_nf & ~pri_is_nf)
         objects_per_subject = real.group_by("sec").agg(pl.col("pri").n_unique().alias("n_objects"))
         subjects_per_object = real.group_by("pri").agg(pl.col("sec").n_unique().alias("n_subjects"))
@@ -656,7 +656,7 @@ def _mapping_conflicts(
     In ``"id"`` mode a conflict arises when the mapping's ``subject_id`` is
     itself a current primary ID. In ``"label"`` mode a conflict arises when the
     ``subject_label`` is a current primary label of some object other than this
-    mapping's own ``object_id``.
+    mapping ``object_id``.
     """
     subj_id = str(getattr(m, "subject_id", None) or "")
     subj_label = str(getattr(m, "subject_label", None) or "")
@@ -1494,7 +1494,7 @@ class BaseParser(ABC):
         return mapping_set
 
     def load(self, path: Path | str, *, mapping_type: str | None = None) -> BaseMappingSet:
-        """Load an SSSOM file back into this parser's own mapping-set class.
+        """Load an SSSOM file back into this parser mapping-set class.
 
         Returns the same object :meth:`create_mapping_set` produces. The class
         is taken from *mapping_type*, else inferred as ``"id"`` when the

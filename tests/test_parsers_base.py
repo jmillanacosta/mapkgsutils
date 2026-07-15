@@ -162,7 +162,7 @@ class _ToyParser(BaseParser):
 
 
 class TestBaseParserFramework:
-    """BaseParser's own helpers, independent of any concrete datasource."""
+    """BaseParser helpers."""
 
     def test_pair_hash_and_record_id_delegate_to_the_module_functions(self) -> None:
         """BaseParser._pair_hash/_record_id are thin wrappers, not a separate hash."""

@@ -45,7 +45,7 @@ CACHE_COLUMNS = (
     "first_seen_date",
     "last_seen_version",
     "last_seen_date",
-    # JSON-encoded snapshot of the mapping's own fields (subject_id,
+    # JSON-encoded snapshot of the mapping fields (subject_id,
     # object_id, predicate_id, ...) as last seen. Used to rebuild the cache
     # into a real SSSOM mapping set later (see build_consolidated_mapping_set).
     # Empty for legacy/hand-built rows.
@@ -106,7 +106,7 @@ def write_meta(meta_path: Path, last_version: str) -> None:
 
 
 def _per_row_date(fields: Mapping[str, str]) -> str:
-    """Return the parser's own per-row ``mapping_date`` from a cache row's snapshot.
+    """Return the parser per-row ``mapping_date`` from a cache row's snapshot.
 
     The per-row date is carried inside ``fields_json`` (see
     :func:`_mapping_fields_json`). Returns ``""`` when the snapshot is
@@ -125,7 +125,7 @@ def _per_row_date(fields: Mapping[str, str]) -> str:
 def _best_date(fields: Mapping[str, str]) -> str:
     """Best available date for a cache row: the parser's per-row date, else first-seen.
 
-    A mapping's own ``mapping_date`` (e.g. an Ensembl ``stable_id_event``
+    A mapping ``mapping_date`` (e.g. an Ensembl ``stable_id_event``
     date) is release-independent and more precise than the release it first
     appeared in, so it wins when present. Otherwise fall back to the
     first-seen release date. ``""`` when neither is available.
@@ -150,7 +150,7 @@ def load_mapping_dates(cache_path: Path) -> dict[str, str]:
 
 
 def _mapping_fields_json(m: Any) -> str:
-    """JSON-encode a mapping's own fields (excluding record_id)."""
+    """JSON-encode a mapping fields (excluding record_id)."""
     from dataclasses import fields as dataclass_fields
     from dataclasses import is_dataclass
 
@@ -228,7 +228,7 @@ def _consolidate_single_parse(
         pair_key = str(getattr(m, "record_id", None) or "")[-16:]
         if not pair_key:
             continue
-        # The mapping's own per-row date is taken from fields_json
+        # The mapping per-row date is taken from fields_json
         date_str = str(m.mapping_date) if getattr(m, "mapping_date", None) else ""
         records[pair_key] = {
             "first_seen_version": version_label,
@@ -255,7 +255,7 @@ def build_consolidated_mapping_set(
     ``mapping_date`` and ``subject_source_version``/``object_source_version``
     are distinct SSSOM fields and each is populated from its proper source:
 
-    - ``mapping_date`` ← the mapping's own per-row date (carried in the
+    - ``mapping_date`` ← the mapping per-row date (carried in the
       snapshot's ``fields_json``) when present, else the first-seen release
       date. The per-row event date is release-independent and more precise.
     - ``subject_source_version``/``object_source_version`` ← the first-seen
@@ -299,7 +299,7 @@ def build_consolidated_mapping_set(
         # mapping_date and subject/object_source_version are semantically
         # distinct SSSOM fields: a release version (e.g. ChEBI's "183") is
         # never a date, and must never end up in mapping_date or vice versa.
-        # Prefer the mapping's own per-row date (already in row_fields from
+        # Prefer the mapping per-row date (already in row_fields from
         # the snapshot); fall back to the first-seen release date. The
         # version fields always come from first_seen_version.
         row_fields["mapping_date"] = (

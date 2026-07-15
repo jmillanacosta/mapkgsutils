@@ -179,7 +179,7 @@ class TestConsolidateReleaseWalk:
         assert read_meta(meta_path) == "2"
 
     def test_per_row_mapping_date_survives_the_walk(self, tmp_path: Path) -> None:
-        """A mapping's own date stays in mapping_date; the version fields hold the release."""
+        """A mapping date stays in mapping_date; the version fields hold the release."""
         cache_path = tmp_path / "cache.tsv"
         meta_path = tmp_path / "meta.json"
         m = _mapping("SEC:1", "PRI:1", "1/" + "a" * 16, mapping_date="2019-03-03")

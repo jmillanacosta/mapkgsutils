@@ -118,7 +118,7 @@ class DatasourceConfig(BaseModel):
     mapping_metadata: dict[str, Any] = Field(default_factory=dict, alias="mapping")
 
     def species_token(self, taxon_id: str | int) -> str:
-        """Resolve a canonical NCBI taxon ID to this datasource's own species token.
+        """Resolve a canonical NCBI taxon ID to this datasource's species token.
 
         Reads the ``species.available`` block (see ``ensembl.yaml``), which
         maps each supported taxon ID to the datasource-specific token used to

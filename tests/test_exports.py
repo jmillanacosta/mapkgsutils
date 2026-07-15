@@ -38,7 +38,7 @@ def mapping_set() -> BaseMappingSet:
 
 
 def test_write_sssom_round_trips_the_mapping(mapping_set: BaseMappingSet, tmp_path: Path) -> None:
-    """The written TSV contains the mapping's own subject/object IDs."""
+    """The written TSV contains the mapping subject/object IDs."""
     out = write_sssom(mapping_set, tmp_path / "out.sssom.tsv")
     text = out.read_text(encoding="utf-8")
     assert "CHEBI:1" in text
