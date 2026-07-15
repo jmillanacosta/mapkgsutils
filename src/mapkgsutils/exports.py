@@ -108,7 +108,7 @@ def write_sssom(
     # condense=False keeps every per-row slot as an explicit column. With the
     # default condense=True, sssom lifts any slot whose value is identical
     # across all rows into the YAML metadata header, so a consolidated set
-    # whose mappings all share one first-seen version/date would silently drop
+    # whose mappings all share one first-seen version/date would drop
     # mapping_date/subject_source_version/object_source_version as columns.
     with output_path.open("w", encoding="utf-8") as f:
         write_table(msdf, f, condense=False)

@@ -259,8 +259,7 @@ def mint_record_id(pri: str, sec: str, *, namespace: str) -> str:
     confidence, ...) under the same IRI.
 
     The trailing 16 hex characters are always :func:`pair_hash`'s
-    version-independent digest. Use that function directly, not this one,
-    for cross-release matching/lookups.
+    version-independent digest.
     """
     return f"{namespace}{pair_hash(pri, sec)}"
 
@@ -889,14 +888,11 @@ class BaseParser(ABC):
     #: config files. Set by the concrete framework subclass.
     config_package: ClassVar[str] = ""
     #: Which :class:`BaseMappingSet` subclass :meth:`create_mapping_set`
-    #: instantiates for each ``mapping_type``. The concrete framework
-    #: subclass overrides this with its own mapping-set classes.
+    #: instantiates for each ``mapping_type``.
     mapping_set_classes: ClassVar[dict[str, type[BaseMappingSet]]] = {
         "id": BaseMappingSet,
         "label": BaseMappingSet,
     }
-    #: Recorded as the SSSOM ``mapping_tool_version`` of generated mapping
-    #: sets. Set by the concrete framework subclass to its own version.
     mapping_tool_version: ClassVar[str] = ""
     _config: DatasourceConfig | None = None
 
@@ -1126,7 +1122,7 @@ class BaseParser(ABC):
     def _label_predicate_for_type(self, label_type: str) -> dict[str, str]:
         """Return predicate fields for a label mapping type.
 
-        Used by :meth:`_build_mappings` when a row carries a ``_label_type``
+        Used by :meth:`_build_mappings` when a row has a ``_label_type``
         key.
 
         - ``"previous"``: the secondary name, label or label ``IAO:0100001`` "term replaced by").

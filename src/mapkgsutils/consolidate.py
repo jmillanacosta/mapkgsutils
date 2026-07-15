@@ -217,12 +217,7 @@ def _consolidate_single_parse(
     *,
     run_one_version: Callable[[str | None], Any],
 ) -> None:
-    """Single-parse path: cache the full current mapping set, dated or not.
-
-    Every mapping is kept — stamped with its own per-row ``mapping_date``
-    when the parser produced one, left undated otherwise — so no mapping is
-    dropped just because it carries no date.
-    """
+    """Cache the full current mapping set."""
     mapping_set = run_one_version(None)
     version_label = str(getattr(mapping_set, "mapping_set_version", None) or "current")
     records: dict[str, dict[str, str]] = {}

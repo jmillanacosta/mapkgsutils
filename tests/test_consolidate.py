@@ -344,7 +344,7 @@ class TestBuildConsolidatedMappingSet:
         assert m.object_source_version == "183"
 
     def test_per_row_date_wins_over_first_seen_release_date(self) -> None:
-        """When the snapshot carries its own mapping_date, that date is kept."""
+        """When the snapshot has a mapping_date keep it."""
         fields_json = json.dumps(
             {
                 "subject_id": "SEC:1",
