@@ -22,6 +22,8 @@ from mapkgsutils.parsers.config import (
     XrefSource,
     get_datasource_config,
     load_config,
+    product_dimensions,
+    product_slug_values,
 )
 from mapkgsutils.parsers.config import _cmp_versions as _cmp_versions  # re-export for consolidate
 
@@ -995,15 +997,23 @@ class BaseParser(ABC):
     def _product_slug(self) -> str | None:
         """Extra IRI path segment identifying the run's data product.
 
-        ``None`` for most parsers (one release == one product). Override
-        when a parser option selects a different dataset rather
-        than just a different output mode, e.g. a species selector for a
-        multi-species datasource, where the same release number produces a
-        disjoint set of mappings per species. Folded into ``mapping_set_id``
-        and :meth:`_record_namespace` so two runs that differ only in this
-        option don't collide on either IRI.
+        A config's ``products`` names the options that split its releases into
+        disjoint datasets, e.g. ``["species"]`` for a multi-species source.
+        This run's value for each becomes a slug segment, folded into
+        ``mapping_set_id`` and :meth:`_record_namespace` so two runs differing
+        only in one of them don't collide on either IRI.
+
+        ``None`` when the config declares no ``products``: one release is one
+        dataset, and the version is the whole slug.
         """
-        return None
+        if self._config is None:
+            return None
+        values = [
+            str(value)
+            for name in product_dimensions(self._config)
+            if (value := getattr(self, name, None)) is not None
+        ]
+        return "/".join(values) or None
 
     def _record_namespace(self) -> str:
         """Return this run's ``record_id`` namespace: ``{base}/{version}/{slug}/``.
@@ -1540,29 +1550,6 @@ class BaseParser(ABC):
         return mapping_set
 
 
-class ProductSlugMixin:
-    """Mixin for datasources whose release splits into disjoint data products.
-
-    Set :attr:`product_attr` to the instance attribute holding the run's
-    selector; its value becomes the :meth:`BaseParser._product_slug` folded
-    into ``mapping_set_id``/``record_id``, so two runs differing only in that
-    option don't collide on either IRI. Mix in ahead of the parser base.
-
-    Example:
-        >>> class SpeciesAwareMixin(ProductSlugMixin):
-        ...     product_attr = "species"
-    """
-
-    #: Instance attribute selecting the data product (e.g. ``"species"``).
-    product_attr: ClassVar[str] = ""
-
-    def _product_slug(self) -> str | None:
-        """Value of :attr:`product_attr` on this run, or ``None`` if unset."""
-        if not self.product_attr:
-            return None
-        return cast("str | None", getattr(self, self.product_attr, None))
-
-
 __all__ = [
     "WITHDRAWN_ENTRY",
     "WITHDRAWN_ENTRY_LABEL",
@@ -1572,10 +1559,11 @@ __all__ = [
     "BaseParser",
     "DatasourceConfig",
     "DistributionEra",
-    "ProductSlugMixin",
     "XrefSource",
     "get_datasource_config",
     "load_config",
     "mint_record_id",
     "pair_hash",
+    "product_dimensions",
+    "product_slug_values",
 ]

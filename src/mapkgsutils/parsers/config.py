@@ -112,6 +112,13 @@ class DatasourceConfig(BaseModel):
     new_format_version: int | None = None
     distribution_eras: list[DistributionEra] = Field(default_factory=list)
     xref_sources: list[XrefSource] = Field(default_factory=list)
+    #: Options that split a release into disjoint datasets, e.g.
+    #: ``["species"]``. Each names an attribute the parser carries; their
+    #: values become the run's product slug (see
+    #: :meth:`~mapkgsutils.parsers.base.BaseParser._product_slug`), so two runs
+    #: differing only in one of these do not collide on ``mapping_set_id`` or
+    #: ``record_id``.
+    products: list[str] = Field(default_factory=list)
     species: dict[str, Any] = Field(default_factory=dict)
     subset: dict[str, Any] = Field(default_factory=dict)
     mappingset_metadata: dict[str, Any] = Field(default_factory=dict, alias="mappingset")
@@ -189,6 +196,34 @@ class DatasourceConfig(BaseModel):
                 continue
             return era
         return None
+
+
+def product_dimensions(config: DatasourceConfig) -> list[str]:
+    """Return the names *config* lists under ``products``.
+
+    Each name is an option whose value splits a release into a dataset of its
+    own. A source that declares none returns an empty list.
+    """
+    return list(config.products)
+
+
+def product_slug_values(config: DatasourceConfig, **options: Any) -> tuple[str, ...]:
+    """Return *options*' values for *config*'s dimensions, in declared order.
+
+    These become the slug segments in ``mapping_set_id`` and ``record_id``, and
+    the directory names under a cache dir. A dimension the caller left out
+    falls back to the config's ``default_<name>()``, then drops out if there is
+    no such default.
+    """
+    values: list[str] = []
+    for name in product_dimensions(config):
+        value = options.get(name)
+        if value is None:
+            default = getattr(config, f"default_{name}", None)
+            value = default() if callable(default) else None
+        if value is not None:
+            values.append(str(value))
+    return tuple(values)
 
 
 @cache
