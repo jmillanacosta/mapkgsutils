@@ -544,6 +544,7 @@ def download_datasource_with_release(
     version: str | None = None,
     keys: list[str] | None = None,
     tar_extractors: Mapping[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    show_progress: bool = True,
     **kwargs: Any,
 ) -> tuple[dict[str, Path], datetime | None]:
     """Download all files for a datasource and report its release date.
@@ -560,6 +561,7 @@ def download_datasource_with_release(
         tar_extractors: ``{datasource_name: extractor}`` registry for
             datasources that publish a ``.tar.gz`` archive needing
             member-level extraction.
+        show_progress: Whether to show download/decompression progress bars.
         **kwargs: Datasource-specific knobs forwarded to the resolved hook.
 
     Returns:
@@ -578,7 +580,12 @@ def download_datasource_with_release(
         urls = {k: v for k, v in urls.items() if k in keys}
 
     extractor = (tar_extractors or {}).get(datasource_lower)
-    return download_urls(urls, output_dir, decompress, tar_extractor=extractor), release_date
+    return (
+        download_urls(
+            urls, output_dir, decompress, tar_extractor=extractor, show_progress=show_progress
+        ),
+        release_date,
+    )
 
 
 def download_datasource(
@@ -591,6 +598,7 @@ def download_datasource(
     version: str | None = None,
     keys: list[str] | None = None,
     tar_extractors: Mapping[str, Callable[[Path, Path], dict[str, Path]]] | None = None,
+    show_progress: bool = True,
     **kwargs: Any,
 ) -> dict[str, Path]:
     """Download all files for a datasource.
@@ -610,6 +618,7 @@ def download_datasource(
         version=version,
         keys=keys,
         tar_extractors=tar_extractors,
+        show_progress=show_progress,
         **kwargs,
     )
     return files
@@ -621,6 +630,7 @@ def download_urls(
     decompress: bool = True,
     *,
     tar_extractor: Callable[[Path, Path], dict[str, Path]] | None = None,
+    show_progress: bool = True,
 ) -> dict[str, Path]:
     """Download files from URLs to output directory.
 
@@ -631,6 +641,7 @@ def download_urls(
         tar_extractor: When given, any ``.tar.gz`` URL is downloaded then
             passed to this callable for member-level extraction instead of
             being treated as a single downloaded file.
+        show_progress: Whether to show download/decompression progress bars.
 
     Returns:
         Dictionary mapping file keys to downloaded paths.
@@ -643,7 +654,7 @@ def download_urls(
         if tar_extractor is not None and filename.endswith(".tar.gz"):
             output_path = output_dir / filename
             logger.info("Downloading %s: %s", key, url)
-            download_file(url, output_path, decompress_gz=False)
+            download_file(url, output_path, decompress_gz=False, show_progress=show_progress)
             extracted = tar_extractor(output_path, output_dir)
             downloaded.update(extracted)
             logger.info("Extracted: %s", list(extracted.keys()))
@@ -654,7 +665,7 @@ def download_urls(
 
         output_path = output_dir / filename
         logger.info("Downloading %s: %s", key, url)
-        download_file(url, output_path, decompress_gz=decompress)
+        download_file(url, output_path, decompress_gz=decompress, show_progress=show_progress)
         downloaded[key] = output_path
         logger.info("Saved to: %s", output_path)
 
