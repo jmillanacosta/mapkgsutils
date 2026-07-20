@@ -3,6 +3,6 @@ message: "If you use this software, please cite it as below."
 title: "MaPkgsUtilS"
 authors:
   - name: "Javier Millan Acosta"
-version: 0.2.5
+version: 0.2.6-dev
 doi:
 url: "https://github.com//mapkgsutils"
