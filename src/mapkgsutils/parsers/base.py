@@ -26,6 +26,7 @@ from mapkgsutils.parsers.config import (
     product_slug_values,
 )
 from mapkgsutils.parsers.config import _cmp_versions as _cmp_versions  # re-export for consolidate
+from mapkgsutils.sparql import query_sparql_scalar
 
 if TYPE_CHECKING:
     import polars as pl
@@ -1044,17 +1045,51 @@ class BaseParser(ABC):
         """
         return None
 
+    def _resolve_version_from_sparql(self) -> str | None:
+        """Resolve the source version via the config's ``version_query``, if any.
+
+        Runs ``self._config.version_query`` against ``self._config.sparql_endpoint``
+        for datasources with no versioned archive to download, whose current
+        release is only observable live (e.g. Wikidata's dump
+        ``schema:dateModified``). When the result looks like an ISO date or
+        datetime, also sets :attr:`release_date` so ``mapping_date`` reflects
+        the actual upstream release instead of today.
+
+        Returns:
+            The resolved version string, or ``None`` if unconfigured, or the
+            query failed or returned no rows.
+        """
+        cfg = self._config
+        if cfg is None or not cfg.version_query or not cfg.sparql_endpoint:
+            return None
+        try:
+            result = query_sparql_scalar(cfg.version_query, cfg.sparql_endpoint)
+        except Exception:
+            logger.warning(
+                "Failed to resolve %s version via SPARQL.", self.datasource_name, exc_info=True
+            )
+            return None
+        if not result:
+            return None
+        iso_match = re.match(r"\d{4}-\d{2}-\d{2}", result)
+        if iso_match:
+            self.release_date = result
+            return iso_match.group(0)
+        return result
+
     def _resolve_version(self, file_path: Path | None = None) -> str:
         """Resolve the dataset version to use for source version fields.
 
         Resolution order:
         1. ``self.version`` if already set explicitly.
-        2. Version extracted from file header via ``_extract_version_from_file``.
-        3. ISO date or release token found in the filename stem
+        2. The config's ``version_query`` run against ``sparql_endpoint``,
+           for SPARQL-based sources.
+        3. Version extracted from file header via ``_extract_version_from_file``.
+        4. ISO date or release token found in the filename stem
            (e.g. ``withdrawn_2026-04-07.txt`` -> ``2026-04-07``,
            ``chebi_245.sdf`` -> ``245``).
-        4. File modification date (ISO-8601) when a path is provided.
-        5. Today's date as a last resort.
+        5. File modification date (ISO-8601) when a path is provided.
+        6. Today's date as a last resort.
 
         Sets ``self.version`` to the resolved value so that
         ``create_mapping_set`` picks it up for ``subject_source_version`` /
@@ -1067,6 +1102,11 @@ class BaseParser(ABC):
             Resolved version string.
         """
         if self.version:
+            return self.version
+
+        queried = self._resolve_version_from_sparql()
+        if queried:
+            self.version = queried
             return self.version
 
         if file_path is not None:

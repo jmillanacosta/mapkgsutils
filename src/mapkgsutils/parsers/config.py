@@ -109,15 +109,14 @@ class DatasourceConfig(BaseModel):
     data_license: str = ""
     sparql_endpoint: str = ""
     queries: dict[str, str] = Field(default_factory=dict)
+    #: SPARQL SELECT run against ``sparql_endpoint`` to get version
+    version_query: str = ""
     new_format_version: int | None = None
     distribution_eras: list[DistributionEra] = Field(default_factory=list)
     xref_sources: list[XrefSource] = Field(default_factory=list)
-    #: Options that split a release into disjoint datasets, e.g.
-    #: ``["species"]``. Each names an attribute the parser carries; their
-    #: values become the run's product slug (see
-    #: :meth:`~mapkgsutils.parsers.base.BaseParser._product_slug`), so two runs
-    #: differing only in one of these do not collide on ``mapping_set_id`` or
-    #: ``record_id``.
+    #: Products split a release into disjoint datasets, e.g.
+    #: ``["species"]``. Each names an attribute of the parser; their
+    #: values become the product slug
     products: list[str] = Field(default_factory=list)
     species: dict[str, Any] = Field(default_factory=dict)
     subset: dict[str, Any] = Field(default_factory=dict)
