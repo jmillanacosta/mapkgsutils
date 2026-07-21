@@ -1339,6 +1339,8 @@ class BaseParser(ABC):
         :meth:`_label_predicate_for_type` before constructing the
         :class:`~sssom_schema.Mapping`.
 
+        A row missing ``record_id`` gets one built automatically.
+
         Args:
             rows: Per-row fields as dicts (subject_id, object_id, etc.).
             fixed_fields: Fields shared by all rows (predicate_id, license, etc.).
@@ -1353,15 +1355,24 @@ class BaseParser(ABC):
         auto: dict[str, Any] = {
             k: m_meta[k] for k in _auto_fields if k in m_meta and m_meta[k] is not None
         }
-
-        # Build base
         base: dict[str, Any] = {**auto, **(fixed_fields or {})}
+        product_dims = product_dimensions(self._config) if self._config else []
 
-        if base:
-            merged: Iterable[dict[str, Any]] = (self._finalize_row({**base, **row}) for row in rows)
-        else:
-            merged = (self._finalize_row(dict(row)) for row in rows)
-        return [Mapping(**row) for row in self._progress(merged, desc=desc, total=total)]
+        def _prepare(row: dict[str, Any]) -> dict[str, Any]:
+            merged = self._finalize_row({**base, **row})
+            overrides = {dim: merged.pop(dim) for dim in product_dims if dim in merged}
+            if not merged.get("record_id"):
+                sec = merged.get("subject_id")
+                if sec is None:
+                    sec = merged.get("subject_label")
+                namespace = self._record_namespace(**overrides)
+                merged["record_id"] = self._record_id(
+                    namespace, str(merged.get("object_id")), str(sec)
+                )
+            return merged
+
+        prepared = (_prepare(dict(row)) for row in rows)
+        return [Mapping(**row) for row in self._progress(prepared, desc=desc, total=total)]
 
     def _build_comment(
         self,
