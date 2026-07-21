@@ -371,7 +371,7 @@ class TestBuildConsolidatedMappingSet:
         )
 
         m = mapping_set.mappings[0]
-        assert str(m.mapping_date) == "2019-03-03"  # the per-row date, not first_seen_date
+        assert str(m.mapping_date) == "2019-03-03"  # row date
         assert m.subject_source_version == "183"
         assert m.object_source_version == "183"
 
