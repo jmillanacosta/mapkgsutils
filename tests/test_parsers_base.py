@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
 from sssom_schema import Mapping
 
 from mapkgsutils.parsers.base import (
@@ -14,6 +15,7 @@ from mapkgsutils.parsers.base import (
     mint_record_id,
     pair_hash,
 )
+from mapkgsutils.parsers.config import DatasourceConfig
 
 _LICENSE = "https://creativecommons.org/publicdomain/zero/1.0/"
 
@@ -182,6 +184,25 @@ class TestBaseParserFramework:
         slugged = _SlugParser(version="245")
         assert slugged._record_namespace() == "245/9606/"
 
+    def test_product_slug_override_beats_the_instance_attribute(self) -> None:
+        """A per-call override wins over self.<dimension>, for per-row product resolution.
+
+        Needed by datasources like NCBI, where a single "species=all" parse
+        spans every organism at once: self.species is the collection
+        selector "all", not any one row's actual value, so each row must
+        resolve its own slug via an override instead of the instance-wide
+        attribute.
+        """
+        parser = _ToyParser(version="245")
+        parser._config = DatasourceConfig(
+            name="Test", prefix="TEST", curie_base_url="http://example.org/", products=["species"]
+        )
+        parser.species = "all"
+
+        assert parser._product_slug() == "all"
+        assert parser._product_slug(species="9606") == "9606"
+        assert parser._record_namespace(species="9606") == "245/9606/"
+
     def test_create_mapping_set_computes_cardinalities_and_id_for_id_type(self) -> None:
         """create_mapping_set builds a mapping set with cardinalities already set."""
 
@@ -195,3 +216,100 @@ class TestBaseParserFramework:
         ms = parser.create_mapping_set(mappings, mapping_type="id")
         assert isinstance(ms, BaseMappingSet)
         assert [str(m.mapping_cardinality) for m in ms.mappings] == ["n:1", "n:1"]
+
+    def test_mapping_set_title_gets_product_label_and_version(self) -> None:
+        """Title names the product (via its configured label) and version, not a static string."""
+        parser = _ToyParser(version="2026-07-21")
+        parser._config = DatasourceConfig(
+            name="NCBI Gene",
+            prefix="TEST",
+            curie_base_url="http://example.org/",
+            products=["species"],
+            species={"available": {"9606": {"label": "Human"}}},
+            mappingset={
+                "mapping_set_id": "https://example.org/test",
+                "mapping_set_title": "NCBI Gene Secondary to Primary Mapping",
+                "license": _LICENSE,
+            },
+        )
+        parser.species = "9606"
+
+        ms = parser.create_mapping_set([], mapping_type="id")
+
+        assert ms.mapping_set_title == (
+            "NCBI Gene Secondary to Primary Mapping (Human, 2026-07-21)"
+        )
+
+    def test_mapping_set_title_falls_back_to_raw_value_when_unlabeled(self) -> None:
+        """A product value outside the curated shortlist still appears, just unlabeled."""
+        parser = _ToyParser(version="2026-07-21")
+        parser._config = DatasourceConfig(
+            name="NCBI Gene",
+            prefix="TEST",
+            curie_base_url="http://example.org/",
+            products=["species"],
+            species={"available": {"9606": {"label": "Human"}}},
+            mappingset={
+                "mapping_set_id": "https://example.org/test",
+                "mapping_set_title": "NCBI Gene Secondary to Primary Mapping",
+                "license": _LICENSE,
+            },
+        )
+        parser.species = "10090"  # not in the curated shortlist
+
+        ms = parser.create_mapping_set([], mapping_type="id")
+
+        assert ms.mapping_set_title == "NCBI Gene Secondary to Primary Mapping (10090, 2026-07-21)"
+
+    def test_mapping_set_title_with_no_products_just_gets_version(self) -> None:
+        """A datasource with no product dimensions (e.g. HGNC) still gets the version suffix."""
+
+        class _ConfiguredParser(_ToyParser):
+            def get_mappingset_metadata(self) -> dict[str, object]:
+                """Return minimal metadata with no product dimensions declared."""
+                return {
+                    "mapping_set_id": "https://example.org/test",
+                    "mapping_set_title": "HGNC Mapping",
+                    "license": _LICENSE,
+                }
+
+        parser = _ConfiguredParser(version="245")
+        ms = parser.create_mapping_set([], mapping_type="id")
+        assert ms.mapping_set_title == "HGNC Mapping (245)"
+
+
+class TestResolveVersionFromSparql:
+    """_resolve_version_from_sparql: version_query results feed version/release_date."""
+
+    def test_release_date_is_a_plain_date_not_the_raw_datetime_literal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """release_date must be YYYY-MM-DD, or SSSOM's XSDDate rejects it as mapping_date.
+
+        Regression test: a live SPARQL endpoint's dateModified literal
+        (e.g. Wikidata's dump date) comes back as a full datetime with a
+        time and "Z" suffix -- storing that raw string in release_date
+        crashed create_mapping_set with "not a valid date" in production.
+        """
+        import mapkgsutils.parsers.base as base_module
+
+        monkeypatch.setattr(
+            base_module, "query_sparql_scalar", lambda query, endpoint: "2026-07-10T23:32:31Z"
+        )
+
+        parser = _ToyParser()
+        parser._config = DatasourceConfig(
+            name="Wikidata",
+            prefix="WD",
+            curie_base_url="http://www.wikidata.org/entity/",
+            sparql_endpoint="https://qlever.dev/api/wikidata",
+            version_query="SELECT ?date WHERE { ?s ?p ?date }",
+        )
+
+        assert parser._resolve_version() == "2026-07-10"
+        assert parser.release_date == "2026-07-10"
+        assert parser._resolve_mapping_date() == "2026-07-10"
+
+    def test_unconfigured_datasource_is_a_no_op(self) -> None:
+        """No version_query/sparql_endpoint: _resolve_version_from_sparql returns None."""
+        assert _ToyParser()._resolve_version_from_sparql() is None

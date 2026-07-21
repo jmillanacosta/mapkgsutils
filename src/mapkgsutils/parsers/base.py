@@ -995,7 +995,7 @@ class BaseParser(ABC):
         """See :func:`mint_record_id`."""
         return mint_record_id(pri, sec, namespace=namespace)
 
-    def _product_slug(self) -> str | None:
+    def _product_slug(self, **overrides: Any) -> str | None:
         """Extra IRI path segment identifying the run's data product.
 
         A config's ``products`` names the options that split its releases into
@@ -1004,19 +1004,80 @@ class BaseParser(ABC):
         ``mapping_set_id`` and :meth:`_record_namespace` so two runs differing
         only in one of them don't collide on either IRI.
 
-        ``None`` when the config declares no ``products``: one release is one
-        dataset, and the version is the whole slug.
+        Args:
+            **overrides: Per-call substitute for one or more product
+                dimension names, keyed exactly like the config's
+                ``products`` entries (e.g. ``species="9606"``). For a
+                parser instance whose single ``self.<name>`` covers every
+                row (the common case), omit these entirely. Needed when one
+                parse spans many values for a dimension at once -- e.g. a
+                datasource with no per-product download, where ``self.species``
+                is a collection selector like ``"all"`` rather than any one
+                row's actual value -- so each row can resolve its own slug
+                instead of inheriting the instance-wide one.
+
+        Returns:
+            ``None`` when the config declares no ``products``: one release
+            is one dataset, and the version is the whole slug.
         """
         if self._config is None:
             return None
-        values = [
-            str(value)
+        values: list[str] = []
+        for name in product_dimensions(self._config):
+            value = overrides[name] if name in overrides else getattr(self, name, None)
+            if value is not None:
+                values.append(str(value))
+        return "/".join(values) or None
+
+    def _product_label(self, name: str, value: Any) -> str:
+        """Human-readable label configured for one product dimension's *value*.
+
+        Looks up ``self._config.<name>.available[str(value)].label`` -- the
+        same shape ``species``/``subset`` config blocks already use for
+        ``--species``/``--subset`` help text (e.g. ``species: available:
+        9606: {label: Human}``). Falls back to the raw value, stringified,
+        when the dimension has no such block or *value* isn't in it (e.g. a
+        valid taxon ID outside a curated shortlist).
+
+        Args:
+            name: Product dimension name, e.g. ``"species"``.
+            value: This run's value for that dimension.
+
+        Returns:
+            The configured label, or ``str(value)``.
+        """
+        block = getattr(self._config, name, None) if self._config else None
+        if isinstance(block, dict):
+            # YAML parses unquoted numeric keys (e.g. "9606:") as ints, not
+            # strings, so string-keyed lookups must normalize first -- same
+            # fix as DatasourceConfig.species_token.
+            available = {str(k): v for k, v in (block.get("available") or {}).items()}
+            entry = available.get(str(value))
+            if isinstance(entry, dict) and entry.get("label"):
+                return str(entry["label"])
+        return str(value)
+
+    def _product_display(self) -> str | None:
+        """Human-readable product description, e.g. ``"Human"`` or ``"3-star (curated, reviewed)"``.
+
+        The display counterpart to :meth:`_product_slug` (the machine-
+        readable IRI segment): joins every configured product dimension's
+        value, resolved through :meth:`_product_label`, for use in
+        ``mapping_set_title``.
+
+        Returns:
+            ``None`` when the config declares no ``products``.
+        """
+        if self._config is None:
+            return None
+        parts = [
+            self._product_label(name, value)
             for name in product_dimensions(self._config)
             if (value := getattr(self, name, None)) is not None
         ]
-        return "/".join(values) or None
+        return ", ".join(parts) or None
 
-    def _record_namespace(self) -> str:
+    def _record_namespace(self, **overrides: Any) -> str:
         """Return this run's ``record_id`` namespace: ``{base}/{version}/{slug}/``.
 
         Mirrors ``mapping_set_id``'s ``{base}/{version}/{slug}`` ordering
@@ -1025,10 +1086,14 @@ class BaseParser(ABC):
         asserted in. Use this, instead of reading
         ``mapping_metadata()["record_id"]`` directly, when building
         per-row ``record_id`` values.
+
+        Args:
+            **overrides: Forwarded to :meth:`_product_slug` -- see there for
+                when a per-row override is needed.
         """
         base = str(self.get_mapping_metadata().get("record_id") or "")
         version = str(self.version) if self.version else None
-        parts = [p for p in (version, self._product_slug()) if p]
+        parts = [p for p in (version, self._product_slug(**overrides)) if p]
         return base + "".join(f"{p}/" for p in parts)
 
     def _extract_version_from_file(self, file_path: Path) -> str | None:
@@ -1073,7 +1138,11 @@ class BaseParser(ABC):
             return None
         iso_match = re.match(r"\d{4}-\d{2}-\d{2}", result)
         if iso_match:
-            self.release_date = result
+            # release_date must be a plain YYYY-MM-DD: _resolve_mapping_date
+            # passes any non-empty string straight through as mapping_date,
+            # and SSSOM's XSDDate rejects a full datetime/timezone literal
+            # (e.g. the raw "2026-07-10T23:32:31Z" this query returns).
+            self.release_date = iso_match.group(0)
             return iso_match.group(0)
         return result
 
@@ -1403,14 +1472,12 @@ class BaseParser(ABC):
     def _resolve_mapping_date(self) -> str:
         """Resolve the SSSOM ``mapping_date`` for the output mapping set.
 
-        The mapping date reflects when the source data was released, not when
+        The mapping date should show when the source data was released, not when
         the mapping set was generated. Resolution order:
 
-        1. ``self.release_date`` when set by the download layer (the upstream
-           release date, e.g. an HTTP ``Last-Modified`` or archive date).
-        2. ``self.version`` when it is an ISO date (``YYYY-MM-DD``), which is
-           the most specific signal for sources whose version *is* a date
-           (e.g. a quarterly date-versioned archive).
+        1. ``self.release_date`` when set by the release date or e.g. an HTTP
+        ``Last-Modified`` or archive date).
+        2. ``self.version`` when it is an ISO date (``YYYY-MM-DD``).
         3. Today's date as a last resort (e.g. live SPARQL queries).
 
         Returns:
@@ -1488,10 +1555,16 @@ class BaseParser(ABC):
         if self.version and description:
             description = f"{description} Version: {self.version}."
 
+        # Title always names which product (using its configured label, e.g.
+        # "Human" for species 9606) and version this particular run covers --
+        # two runs differing only in one of those must not share a title.
+        title = ms_meta.get("mapping_set_title")
+        title_suffix = [p for p in (self._product_display(), self.version) if p]
+        if title and title_suffix:
+            title = f"{title} ({', '.join(str(p) for p in title_suffix)})"
+
         # Annotate ambiguous mappings (primary also appears as secondary)
         mappings = _annotate_ambiguous_mappings(mappings, mapping_type=mapping_type)
-        # Source-version carries the genome build, not the release (the
-        # release is already explicit in mapping_set_version/_id).
         source_version = self._source_version()
         product_slug = self._product_slug()
         version_path = f"/{self.version}/{product_slug}" if product_slug else f"/{self.version}"
@@ -1502,7 +1575,7 @@ class BaseParser(ABC):
             curie_map=curie_map,
             mapping_set_id=fix_ms_id,
             mapping_set_version=self.version,
-            mapping_set_title=ms_meta.get("mapping_set_title"),
+            mapping_set_title=title,
             mapping_set_description=description or None,
             creator_id=_compress(ms_meta.get("creator_id")),
             creator_label=ms_meta.get("creator_label"),
