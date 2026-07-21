@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from sssom_schema import Mapping
@@ -158,6 +158,9 @@ class TestFindAmbiguous:
 class _ToyParser(BaseParser):
     """A minimal concrete BaseParser, with no datasource config, for framework tests."""
 
+    #: Set by tests exercising a "species" product dimension; unused otherwise.
+    species: str
+
     def parse(self, input_path: Path | str | None) -> BaseMappingSet:
         """Not exercised by these tests; required to make the class concrete."""
         raise NotImplementedError
@@ -178,7 +181,7 @@ class TestBaseParserFramework:
         assert parser._record_namespace() == "245/"
 
         class _SlugParser(_ToyParser):
-            def _product_slug(self) -> str | None:
+            def _product_slug(self, **overrides: Any) -> str | None:
                 return "9606"
 
         slugged = _SlugParser(version="245")
