@@ -30,8 +30,10 @@ treon:
 [doc("format code")]
 format:
     # Note that ruff check should come before ruff format when using --fix (ref: https://github.com/astral-sh/ruff-pre-commit/blob/main/README.md)
-    uvx ruff check --fix
-    uvx ruff format
+    # Use the version pinned in the "lint" dependency group, not uvx's latest,
+    # so format/lint results are reproducible across machines and CI.
+    uv run --group lint ruff check --fix
+    uv run --group lint ruff format
 
 [doc("format documentation")]
 format-docs:
@@ -46,8 +48,10 @@ format-markdown:
 
 [doc("check code quality")]
 lint:
-    uvx ruff check
-    uvx ruff format --check
+    # Use the version pinned in the "lint" dependency group, not uvx's latest,
+    # so format/lint results are reproducible across machines and CI.
+    uv run --group lint ruff check
+    uv run --group lint ruff format --check
 
 [doc("check markdown is properly formatted")]
 lint-markdown:
