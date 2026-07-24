@@ -39,6 +39,9 @@ class DistributionEra(BaseModel):
     from_version: str | None = None
     to_version: str | None = None
     wayback: bool = False
+    #: Override of mapping_sets[kind]["inputs"], only needed when
+    #: this era's download keys differ from the current era.
+    inputs: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class XrefSource(BaseModel):
@@ -174,6 +177,24 @@ class DatasourceConfig(BaseModel):
             List of format strings, or an empty list when the kind is absent.
         """
         return self.mapping_sets.get(kind, {}).get("formats", [])
+
+    def inputs_for(self, kind: str, version: str | None) -> dict[str, str]:
+        """Return the ``{download_urls key: parser param}`` map for *kind*/*version*.
+
+        Args:
+            kind: Mapping-set key, e.g. ``"ids"`` or ``"labels"``.
+            version: Version string to resolve the era for, or ``None``.
+
+        Returns:
+            Dict mapping each expected download key to the parser parameter
+            name it feeds, or an empty dict when *kind* is not configured.
+        """
+        era = self.era_for(version)
+        if era is not None:
+            override = era.inputs.get(kind)
+            if override is not None:
+                return override
+        return cast("dict[str, str]", (self.mapping_sets.get(kind) or {}).get("inputs") or {})
 
     def era_for(self, version: str | None) -> DistributionEra | None:
         """Return the first configured era whose bounds contain *version*.
